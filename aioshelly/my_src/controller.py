@@ -8,8 +8,15 @@ DEVICES = {
 
 def rpc(ip, method, params=None):
     url = f"http://{ip}/rpc/{method}"
-    r = requests.get(url, params=params)
-    return r.json()
+    try:
+        # 使用 POST + JSON，避免 GET 查询参数中的布尔大小写问题（True/False vs true/false）
+        response = requests.post(url, json=params or {}, timeout=5)
+        response.raise_for_status()
+        if response.headers.get("Content-Type", "").startswith("application/json"):
+            return response.json()
+        return response.text
+    except Exception as exc:
+        return {"error": str(exc)}
 
 def print_status(status):
     """只打印关键字段"""

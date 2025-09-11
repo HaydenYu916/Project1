@@ -1,0 +1,210 @@
+import numpy as np
+import warnings
+
+# 从本仓库导入外部依赖
+try:
+    from .led import led_step
+except ImportError:
+    # 当直接运行此文件时，使用绝对导入
+    from led import led_step
+
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'models'))
+
+try:
+    from pn_prediction.predict_corrected import CorrectedPhotosynthesisPredictor as PhotosynthesisPredictor
+    _PHOTO_OK = True
+    print("✅ 使用修正的光合作用预测器 (API)")
+except Exception:
+    try:
+        from pn_prediction.predict import PhotosynthesisPredictor
+        _PHOTO_OK = True
+        print("✅ 使用标准光合作用预测器 (API)")
+    except Exception:
+        PhotosynthesisPredictor = None  # type: ignore
+        _PHOTO_OK = False
+        print("⚠️ 光合作用预测器不可用，使用简单模型 (API)")
+
+
+def _simple_photosynthesis(ppfd: float, temperature: float) -> float:
+    """备用光合作用模型（光响应与温度因子）"""
+    ppfd_max = 1000.0  # 最大PPFD
+    pn_max = 25.0      # 最大净光合速率
+    km = 300.0         # 半饱和常数
+    temp_factor = np.exp(-0.01 * (temperature - 25.0) ** 2)  # 温度因子
+    pn = (pn_max * ppfd / (km + ppfd)) * temp_factor
+    return float(max(0.0, pn))
+
+
+def mppi_next_ppfd(current_ppfd: float, temperature: float, co2: float, humidity: float) -> float:
+    """通过MPPI风格步骤计算下一个PPFD设定值
+
+    输入是当前测量值。函数返回应用优化序列中第一个控制后的预测PPFD输出。
+
+    参数:
+    - current_ppfd: 当前测量的PPFD (µmol/m²/s)
+    - temperature: 当前环境/冠层温度 (°C)
+    - co2: 当前CO₂浓度 (ppm)
+    - humidity: 当前相对湿度 (%)。目前未使用但为API稳定性而接受
+
+    返回:
+    - 应用第一个优化控制后的预测PPFD (µmol/m²/s)
+    """
+
+    # --- LED/植物参数（与mppi-power默认值对齐） ---
+    base_ambient_temp = 22.0      # 环境基准温度
+    max_ppfd = 700.0             # 最大PPFD
+    max_power = 100.0            # 最大功率
+    thermal_resistance = 1.2     # 热阻
+    thermal_mass = 8.0           # 热容
+
+    # --- MPPI超参数 ---
+    horizon = 10                 # 预测时域
+    num_samples = 800            # 采样数量（API使用中略微减少以提高速度）
+    dt = 1.0                     # 时间步长
+    lam = 0.5                    # softmax加权的温度参数
+
+    # 成本权重
+    Q_photo = 5.0                # 光合作用权重
+    R_pwm = 1e-3                 # PWM权重
+    R_dpwm = 0.05                # PWM变化率权重
+    R_power = 0.08               # 功率权重
+
+    # 约束条件
+    pwm_min = 0.0                # 最小PWM
+    pwm_max = 100.0              # 最大PWM
+    temp_min = 20.0              # 最低温度
+    temp_max = 29.0              # 最高温度
+
+    # 惩罚项
+    temp_penalty = 100000.0      # 温度惩罚
+    pwm_penalty = 1000.0         # PWM惩罚
+
+    # PWM序列的采样标准差
+    pwm_std = 10.0
+
+    # 从当前PPFD估计前一个PWM以实现平滑性
+    pwm_prev_est = float(np.clip((current_ppfd / max_ppfd) * 100.0, pwm_min, pwm_max))
+    mean_sequence = np.ones(horizon, dtype=float) * pwm_prev_est
+
+    # 光合作用预测器（可选）
+    predictor = None
+    if _PHOTO_OK:
+        try:
+            predictor = PhotosynthesisPredictor()
+            if not getattr(predictor, "is_loaded", True):
+                predictor = None
+        except Exception:
+            predictor = None
+            warnings.warn("PhotosynthesisPredictor不可用。使用简单模型。")
+
+    # 在均值周围采样控制序列
+    noise = np.random.normal(0.0, pwm_std, size=(num_samples, horizon))
+    samples = np.clip(mean_sequence[None, :] + noise, pwm_min, pwm_max)
+
+    def rollout_and_cost(pwm_seq: np.ndarray, temp0: float) -> float:
+        """前向仿真并计算成本"""
+        cost = 0.0
+        prev_pwm = pwm_prev_est
+        temp = float(temp0)
+        for k in range(horizon):
+            pwm = float(pwm_seq[k])
+            # 植物步骤
+            ppfd, new_temp, power, _ = led_step(
+                pwm_percent=pwm,
+                ambient_temp=temp,
+                base_ambient_temp=base_ambient_temp,
+                dt=dt,
+                max_ppfd=max_ppfd,
+                max_power=max_power,
+                thermal_resistance=thermal_resistance,
+                thermal_mass=thermal_mass,
+            )
+
+            # 光合作用
+            if predictor is not None:
+                try:
+                    pn = float(predictor.predict(ppfd, co2, new_temp, 0.83))
+                except Exception:
+                    pn = _simple_photosynthesis(ppfd, new_temp)
+            else:
+                pn = _simple_photosynthesis(ppfd, new_temp)
+
+            # 目标：最大化光合作用（最小化-Q*pn）
+            cost += -Q_photo * pn
+
+            # 控制努力和平滑性
+            cost += R_pwm * (pwm ** 2)
+            cost += R_power * (power ** 2)
+            dpwm = pwm - prev_pwm
+            cost += R_dpwm * (dpwm ** 2)
+            prev_pwm = pwm
+
+            # 温度硬约束惩罚
+            if new_temp > temp_max:
+                v = new_temp - temp_max
+                cost += temp_penalty * (v ** 2)
+            if new_temp < temp_min:
+                v = temp_min - new_temp
+                cost += temp_penalty * (v ** 2)
+
+            # PWM硬约束惩罚（应该已经被裁剪）
+            if pwm > pwm_max:
+                v = pwm - pwm_max
+                cost += pwm_penalty * (v ** 2)
+            if pwm < pwm_min:
+                v = pwm_min - pwm
+                cost += pwm_penalty * (v ** 2)
+
+            temp = float(new_temp)
+
+        return float(cost)
+
+    # 计算所有样本的成本
+    costs = np.array([rollout_and_cost(samples[i], temperature) for i in range(num_samples)])
+    costs = np.nan_to_num(costs, nan=1e10, posinf=1e10)
+
+    # MPPI加权（负成本的softmax）
+    cmin = float(np.min(costs))
+    weights = np.exp(-(costs - cmin) / max(lam, 1e-6))
+    denom = float(np.sum(weights))
+    if denom <= 0 or not np.isfinite(denom):
+        # 退化情况：选择最小成本
+        optimal_seq = samples[int(np.argmin(costs))]
+    else:
+        weights /= denom
+        optimal_seq = np.sum(weights[:, None] * samples, axis=0)
+
+    optimal_seq = np.clip(optimal_seq, pwm_min, pwm_max)
+    optimal_pwm = float(optimal_seq[0])
+
+    # 安全检查：单步温度保护
+    _, temp_check, _, _ = led_step(
+        pwm_percent=optimal_pwm,
+        ambient_temp=temperature,
+        base_ambient_temp=base_ambient_temp,
+        dt=dt,
+        max_ppfd=max_ppfd,
+        max_power=max_power,
+        thermal_resistance=thermal_resistance,
+        thermal_mass=thermal_mass,
+    )
+    if temp_check > temp_max:
+        optimal_pwm = max(pwm_min, optimal_pwm * 0.7)
+
+    # 应用选择的控制后产生预测PPFD
+    ppfd_out, _, _, _ = led_step(
+        pwm_percent=optimal_pwm,
+        ambient_temp=temperature,
+        base_ambient_temp=base_ambient_temp,
+        dt=dt,
+        max_ppfd=max_ppfd,
+        max_power=max_power,
+        thermal_resistance=thermal_resistance,
+        thermal_mass=thermal_mass,
+    )
+
+    # 裁剪到可行的PPFD范围
+    return float(np.clip(ppfd_out, 0.0, max_ppfd))
+
