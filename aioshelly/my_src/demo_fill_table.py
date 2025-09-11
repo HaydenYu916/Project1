@@ -39,6 +39,17 @@ def parse_row(parts: list[str]):
     return key, ppfd, r_pwm, b_pwm
 
 
+def _retry(callable_fn, max_attempts=3, base_delay=0.3):
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return callable_fn()
+        except Exception as e:
+            last_err = str(e)
+        time.sleep(base_delay * (2 ** (attempt - 1)))
+    return {"error": last_err or "unknown"}
+
+
 def set_device_brightness(device_name: str, pwm_value: float | None):
     ip = DEVICES[device_name]
     if pwm_value is None:
@@ -46,14 +57,14 @@ def set_device_brightness(device_name: str, pwm_value: float | None):
     value = max(0, min(100, int(round(pwm_value))))
     if value <= 0:
         # 亮度为 0 时，尝试直接关断
-        return rpc(ip, "Light.Set", {"id": 0, "on": False, "brightness": 0})
+        return _retry(lambda: rpc(ip, "Light.Set", {"id": 0, "on": False, "brightness": 0}))
     # 设为开并设置亮度
-    return rpc(ip, "Light.Set", {"id": 0, "on": True, "brightness": value})
+    return _retry(lambda: rpc(ip, "Light.Set", {"id": 0, "on": True, "brightness": value}))
 
 
 def get_device_status(device_name: str):
     ip = DEVICES[device_name]
-    status = rpc(ip, "Shelly.GetStatus")
+    status = _retry(lambda: rpc(ip, "Shelly.GetStatus"))
     if not isinstance(status, dict):
         return {"error": status}
     light = status.get("light:0", {}) if isinstance(status.get("light:0", {}), dict) else {}
@@ -90,6 +101,8 @@ def process_file(input_path: str, output_path: str, settle_sec: float = 1.0):
         "B_ON",
         "R_TEMP_C",
         "B_TEMP_C",
+        "R_ERROR",
+        "B_ERROR",
     ]
     rows_out.append(header)
 
@@ -109,8 +122,8 @@ def process_file(input_path: str, output_path: str, settle_sec: float = 1.0):
             key, ppfd, r_pwm, b_pwm = parsed
 
             # 设置亮度
-            set_device_brightness("Red", r_pwm)
-            set_device_brightness("Blue", b_pwm)
+            r_set = set_device_brightness("Red", r_pwm)
+            b_set = set_device_brightness("Blue", b_pwm)
 
             # 等待稳定
             time.sleep(settle_sec)
@@ -146,6 +159,8 @@ def process_file(input_path: str, output_path: str, settle_sec: float = 1.0):
                 b_on,
                 r_temp,
                 b_temp,
+                (r_set.get("error") if isinstance(r_set, dict) else None) or (r_stat.get("error") if isinstance(r_stat, dict) else None),
+                (b_set.get("error") if isinstance(b_set, dict) else None) or (b_stat.get("error") if isinstance(b_stat, dict) else None),
             ])
 
     # 写出 CSV（使用英文逗号），UTF-8 编码
