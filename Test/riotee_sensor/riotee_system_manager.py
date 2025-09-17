@@ -18,7 +18,7 @@ class RioteeSystem:
     def __init__(self):
         self.base_dir = Path(__file__).parent
         self.collector_script = self.base_dir / "riotee_data_collector.py"
-        self.logs_path = self.base_dir.parent / "logs"
+        self.logs_path = self.base_dir / "logs"  # 使用本地logs目录
         self.pid_file = self.base_dir / "riotee_collector.pid"
         self.log_file = self.base_dir / "riotee_system_manager.log"
         self.print_output_file = self.base_dir / "riotee_collector_print_output.txt"  # 采集器print输出记录
@@ -113,8 +113,9 @@ class RioteeSystem:
         logging.info(f"开始启动Riotee数据采集器，实验名称: {experiment_name}")
         
         try:
-            # 构建启动命令
-            cmd = [sys.executable, str(self.collector_script)]
+            # 构建启动命令 - 使用riotee虚拟环境
+            riotee_python = "/home/pi/Desktop/riotee-env/bin/python3"
+            cmd = [riotee_python, str(self.collector_script)]
             if experiment_name:
                 cmd.append(experiment_name)
                 cmd.append(f"Riotee数据采集实验-{experiment_name}")

@@ -58,8 +58,8 @@ args = parser.parse_args()
 # ============================
 # 基础环境设置  
 # ============================
-# 创建logs目录 - 指向上级统一logs目录
-LOGS_DIR = "../logs"
+# 创建logs目录 - 使用本地logs目录，避免与其他传感器冲突
+LOGS_DIR = "logs"
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 # 配置日志
