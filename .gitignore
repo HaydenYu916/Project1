@@ -1,3 +1,15 @@
 riotee-env/
 Collect_SP_Solar_PWM/
 logs/*.csv
+logs/*.log
+logs/*.txt
+logs/*.json
+logs/*.pid
+*.csv
+*.log
+*.txt
+*.json
+*.pid
+
+
+
