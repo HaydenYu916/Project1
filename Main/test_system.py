@@ -115,8 +115,8 @@ def test_command_generation(r_pwm, b_pwm):
             return False
         
         # 转换PWM值到亮度值 (0-100)
-        r_brightness = int(np.clip(r_pwm * 100 / 80, 0, 100))
-        b_brightness = int(np.clip(b_pwm * 100 / 80, 0, 100))
+        r_brightness = int(np.round(np.clip(r_pwm, 0, 100)))
+        b_brightness = int(np.round(np.clip(b_pwm, 0, 100)))
         
         print(f"   红光PWM: {r_pwm:.2f} -> 亮度: {r_brightness}")
         print(f"   蓝光PWM: {b_pwm:.2f} -> 亮度: {b_brightness}")

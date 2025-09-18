@@ -198,9 +198,9 @@ class MPPIControlExecute:
         try:
             print(f"📡 发送PWM命令到设备...")
             
-            # 转换PWM值到亮度值 (0-100)
-            r_brightness = int(np.clip(r_pwm * 100 / 80, 0, 100))
-            b_brightness = int(np.clip(b_pwm * 100 / 80, 0, 100))
+            # 转换PWM值到亮度值 (PWM值直接作为亮度值，四舍五入)
+            r_brightness = int(np.round(np.clip(r_pwm, 0, 100)))
+            b_brightness = int(np.round(np.clip(b_pwm, 0, 100)))
             
             commands = []
             red_status = None
