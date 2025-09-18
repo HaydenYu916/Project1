@@ -76,20 +76,7 @@ class MPPIControlExecute:
             rb_ratio_key="5:1"
         )
         
-        # 设置控制器参数
-        self.controller.set_weights(
-            Q_photo=10.0,
-            R_pwm=0.001,
-            R_dpwm=0.05,
-            R_power=0.01
-        )
-        
-        self.controller.set_constraints(
-            pwm_min=0.0,
-            pwm_max=80.0,
-            temp_min=20.0,
-            temp_max=29.0
-        )
+        # 使用MPPI控制器的默认参数，不进行覆盖设置
         
         # 设备IP地址
         self.devices = DEVICES

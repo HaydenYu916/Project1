@@ -74,20 +74,7 @@ class MPPIControlLoop:
             rb_ratio_key="5:1"    # 红蓝比例键
         )
         
-        # 设置控制器参数
-        self.controller.set_weights(
-            Q_photo=10.0,    # 光合作用权重
-            R_pwm=0.001,     # PWM权重
-            R_dpwm=0.05,     # PWM变化权重
-            R_power=0.01     # 功率权重
-        )
-        
-        self.controller.set_constraints(
-            pwm_min=0.0,     # PWM最小值
-            pwm_max=80.0,    # PWM最大值
-            temp_min=20.0,   # 温度最小值
-            temp_max=29.0    # 温度最大值
-        )
+        # 使用MPPI控制器的默认参数，不进行覆盖设置
         
         # 设备IP地址
         self.devices = DEVICES

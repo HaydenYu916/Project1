@@ -75,9 +75,7 @@ def test_mppi_control():
             rb_ratio_key="5:1"
         )
         
-        # 设置参数
-        controller.set_weights(Q_photo=10.0, R_pwm=0.001, R_dpwm=0.05, R_power=0.01)
-        controller.set_constraints(pwm_min=0.0, pwm_max=80.0, temp_min=20.0, temp_max=29.0)
+        # 使用MPPI控制器的默认参数，不进行覆盖设置
         
         # 测试温度
         test_temp = 24.5
