@@ -49,18 +49,23 @@ def get_ratio_weights(key: str) -> tuple[float, float]:
         return ra / ssum, rb / ssum
     return 0.5, 0.5
 
-# 可选光合作用模型（如不可用则退化）
+# 必需的光合作用模型（必须加载成功）
 sys.path.append(os.path.join(os.path.dirname(__file__), 'models'))
+
 try:
     # 优先使用基于 PPFD 的模型（加载路径指向 models/MODEL/PPFD）
     from pn_prediction.predict import PhotosynthesisPredictor
+    # 测试模型是否能正常初始化
+    test_predictor = PhotosynthesisPredictor()
     PHOTOSYNTHESIS_AVAILABLE = True
-except Exception:
+except Exception as e:
     try:
         from pn_prediction.predict_corrected import CorrectedPhotosynthesisPredictor as PhotosynthesisPredictor
+        # 测试模型是否能正常初始化
+        test_predictor = PhotosynthesisPredictor()
         PHOTOSYNTHESIS_AVAILABLE = True
-    except Exception:
-        PHOTOSYNTHESIS_AVAILABLE = False
+    except Exception as e2:
+        raise ImportError(f"无法加载任何光合作用模型。主要错误: {e}，备用错误: {e2}") from e2
 
 
 class LEDPlant:
@@ -86,17 +91,22 @@ class LEDPlant:
         self.ppfd_model = ppfd_model or PWMtoPPFDModel(include_intercept=True).fit(DEFAULT_CALIB_CSV)
         self.eta_model = eta_model
 
-        # 光合作用预测器（可选）
+        # 光合作用预测器（必需）
         self.photo_predictor = pn_predictor
-        self.use_photo_model = False
-        if self.photo_predictor is None and PHOTOSYNTHESIS_AVAILABLE:
+        if self.photo_predictor is None:
+            if not PHOTOSYNTHESIS_AVAILABLE:
+                raise ImportError("光合作用模型不可用，无法创建LEDPlant")
             try:
                 self.photo_predictor = PhotosynthesisPredictor()
                 self.use_photo_model = getattr(self.photo_predictor, "is_loaded", True)
-            except Exception:
-                self.use_photo_model = False
-        elif self.photo_predictor is not None:
+                if not self.use_photo_model:
+                    raise RuntimeError("光合作用模型加载失败")
+            except Exception as e:
+                raise RuntimeError(f"无法初始化光合作用预测器: {e}") from e
+        else:
             self.use_photo_model = getattr(self.photo_predictor, "is_loaded", True)
+            if not self.use_photo_model:
+                raise RuntimeError("提供的光合作用预测器未正确加载")
 
     def step(self, r_pwm: float, b_pwm: float, dt: float = 0.1):
         out = forward_step(
@@ -117,14 +127,13 @@ class LEDPlant:
         return (out.ppfd or 0.0), out.temp, out.power, photosynthesis_rate
 
     def get_photosynthesis_rate(self, ppfd, temperature, co2=400, rb_ratio=0.83):
-        if self.use_photo_model and self.photo_predictor is not None:
-            try:
-                return float(self.photo_predictor.predict(ppfd, co2, temperature, rb_ratio))
-            except Exception:
-                pass
-        # 退化的简化模型
-        temp_factor = np.exp(-0.01 * (temperature - 25.0) ** 2)
-        return float(max(0.0, (25.0 * ppfd / (300.0 + ppfd)) * temp_factor))
+        if not self.use_photo_model or self.photo_predictor is None:
+            raise RuntimeError("光合作用预测器未正确初始化")
+        
+        try:
+            return float(self.photo_predictor.predict(ppfd, co2, temperature, rb_ratio))
+        except Exception as e:
+            raise RuntimeError(f"光合作用预测失败: {e}") from e
 
     def predict(self, pwm_sequence_rb: np.ndarray, initial_temp: float, dt: float = 0.1):
         self.thermal.reset(initial_temp)
@@ -172,7 +181,7 @@ class LEDMPPIController:
             self.w_r, self.w_b = 1.0, 1.0
 
         self.weights = {'Q_photo': 10.0, 'R_pwm': 0.001, 'R_dpwm': 0.05, 'R_power': 0.01}
-        self.constraints = {'pwm_min': 0.0, 'pwm_max': 80.0, 'temp_min': 20.0, 'temp_max': 29.0}
+        self.constraints = {'pwm_min': 0.0, 'pwm_max': 95.0, 'temp_min': 20.0, 'temp_max': 30.0}
         self.penalties = {'temp_penalty': 100000.0, 'pwm_penalty': 1000.0}
         self.pwm_std = np.array([15.0, 15.0], dtype=float)
 
@@ -258,8 +267,8 @@ class LEDMPPIController:
             )
             temp_penalty_cost = np.sum(temp_violation) * self.penalties['temp_penalty']
             return float(photo_cost + pwm_cost + dpwm_cost + power_cost + temp_penalty_cost)
-        except Exception:
-            return 1e10
+        except Exception as e:
+            raise RuntimeError(f"成本计算失败: {e}") from e
 
     def _temperature_safety_check(self, pwm_action_rb, current_temp):
         seq = np.asarray([pwm_action_rb], dtype=float)

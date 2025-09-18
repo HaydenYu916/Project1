@@ -67,7 +67,7 @@ class RioteeDataReader:
                 continue
         return None
     
-    def get_latest_data(self, max_age_seconds=30):
+    def get_latest_data(self, max_age_seconds=120):
         """获取最新一条Riotee数据"""
         csv_path = self._find_latest_csv()
         if not csv_path:
@@ -129,7 +129,7 @@ class RioteeDataReader:
         except Exception as e:
             return None
     
-    def get_device_latest_data(self, device_id, max_age_seconds=30):
+    def get_device_latest_data(self, device_id, max_age_seconds=120):
         """获取指定设备的最新数据"""
         csv_path = self._find_latest_csv()
         if not csv_path:
@@ -230,10 +230,10 @@ class RioteeDataReader:
             return []
 
 # 创建全局读取器实例
-_logs_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
+_logs_path = os.path.join(os.path.dirname(__file__), 'logs')
 _reader = RioteeDataReader(_logs_path)
 
-def get_current_riotee(device_id=None, max_age_seconds=30):
+def get_current_riotee(device_id=None, max_age_seconds=120):
     """
     获取当前Riotee数据（最常用的接口）
     
@@ -253,7 +253,7 @@ def get_current_riotee(device_id=None, max_age_seconds=30):
         return data
     return None
 
-def get_riotee_data(device_id=None, max_age_seconds=30):
+def get_riotee_data(device_id=None, max_age_seconds=120):
     """
     获取详细的Riotee数据
     

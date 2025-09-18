@@ -42,7 +42,7 @@ from collections import defaultdict
 # 默认配置
 DEFAULT_SPECTRAL = [415, 445, 480, 515, 555, 590, 630, 680]
 DEFAULT_LOGS_DIR = "logs"
-DEFAULT_UPDATE_THRESHOLD = 30  # 秒
+DEFAULT_UPDATE_THRESHOLD = 120  # 秒
 
 
 def _get_config() -> Dict[str, Any]:
