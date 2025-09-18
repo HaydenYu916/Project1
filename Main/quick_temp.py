@@ -9,7 +9,7 @@ import os
 
 # ==================== 配置宏定义 ====================
 # 温度传感器设备ID配置（修改此处即可切换设备）
-TEMPERATURE_DEVICE_ID = None  # None=自动选择, "T6ncwg=="=指定设备1, "L_6vSQ=="=指定设备2
+TEMPERATURE_DEVICE_ID = "L_6vSQ=="  # None=自动选择, "T6ncwg=="=指定设备1, "L_6vSQ=="=指定设备2
 # =====================================================
 
 # 添加 riotee_sensor 目录到Python路径

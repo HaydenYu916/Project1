@@ -19,8 +19,6 @@ TEMPERATURE_DEVICE_ID = None  # None=自动选择, "T6ncwg=="=指定设备1, "L_
 # 控制循环间隔（分钟）
 CONTROL_INTERVAL_MINUTES = 1
 
-# 目标温度（°C）
-TARGET_TEMPERATURE = 25.0
 
 # 红蓝比例键
 RB_RATIO_KEY = "5:1"
@@ -52,7 +50,6 @@ class MPPIControlLoop:
         
         # 使用宏定义配置
         self.temperature_device_id = TEMPERATURE_DEVICE_ID
-        self.target_temp = TARGET_TEMPERATURE
         
         # 初始化LED植物模型
         self.plant = LEDPlant(
@@ -91,7 +88,6 @@ class MPPIControlLoop:
         self.devices = DEVICES
         
         print("✅ MPPI控制循环初始化完成")
-        print(f"   目标温度: {self.target_temp}°C")
         print(f"   温度设备: {self.temperature_device_id or '自动选择'}")
         print(f"   LED设备列表: {list(self.devices.keys())}")
         print(f"   红蓝比例: {RB_RATIO_KEY}")
@@ -136,7 +132,7 @@ class MPPIControlLoop:
     def run_mppi_control(self, current_temp):
         """运行MPPI控制算法"""
         try:
-            print(f"🎯 运行MPPI控制 (当前温度: {current_temp:.2f}°C, 目标: {self.target_temp:.2f}°C)")
+            print(f"🎯 运行MPPI控制 (当前温度: {current_temp:.2f}°C)")
             
             # 运行MPPI求解
             optimal_action, optimal_sequence, success, cost, weights = self.controller.solve(
@@ -268,7 +264,6 @@ def main():
     print("=" * 50)
     print(f"📱 配置信息:")
     print(f"   温度设备: {TEMPERATURE_DEVICE_ID or '自动选择'}")
-    print(f"   目标温度: {TARGET_TEMPERATURE}°C")
     print(f"   红蓝比例: {RB_RATIO_KEY}")
     print(f"   控制间隔: {CONTROL_INTERVAL_MINUTES}分钟")
     print("=" * 50)

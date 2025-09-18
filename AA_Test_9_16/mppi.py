@@ -181,7 +181,7 @@ class LEDMPPIController:
             self.w_r, self.w_b = 1.0, 1.0
 
         self.weights = {'Q_photo': 10.0, 'R_pwm': 0.001, 'R_dpwm': 0.05, 'R_power': 0.01}
-        self.constraints = {'pwm_min': 0.0, 'pwm_max': 95.0, 'temp_min': 20.0, 'temp_max': 30.0}
+        self.constraints = {'pwm_min': 5.0, 'pwm_max': 95.0, 'temp_min': 20.0, 'temp_max': 30.0}
         self.penalties = {'temp_penalty': 100000.0, 'pwm_penalty': 1000.0}
         self.pwm_std = np.array([15.0, 15.0], dtype=float)
 
