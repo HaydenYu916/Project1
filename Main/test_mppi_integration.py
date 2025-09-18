@@ -10,6 +10,11 @@ import os
 import json
 from datetime import datetime
 
+# ==================== 配置宏定义 ====================
+# 温度传感器设备ID配置（修改此处即可切换设备）
+TEMPERATURE_DEVICE_ID = None  # None=自动选择, "T6ncwg=="=指定设备1, "L_6vSQ=="=指定设备2
+# =====================================================
+
 # 添加路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
 riotee_sensor_dir = os.path.join(current_dir, '..', 'Test', 'riotee_sensor')
@@ -27,7 +32,7 @@ def test_temperature_reading():
     print("🌡️  测试温度读取...")
     try:
         from __init__ import get_current_riotee
-        data = get_current_riotee(max_age_seconds=86400)  # 放宽到24小时
+        data = get_current_riotee(device_id=TEMPERATURE_DEVICE_ID, max_age_seconds=86400)  # 放宽到24小时
         
         if data and data.get('temperature') is not None:
             temp = data['temperature']
@@ -36,7 +41,10 @@ def test_temperature_reading():
             print(f"✅ 温度读取成功: {temp:.2f}°C (设备: {device_id}, {age:.0f}秒前)")
             return temp
         else:
-            print("⚠️  无有效温度数据，使用模拟温度 24.5°C")
+            if TEMPERATURE_DEVICE_ID:
+                print(f"⚠️  指定设备 {TEMPERATURE_DEVICE_ID} 无有效温度数据，使用模拟温度 24.5°C")
+            else:
+                print("⚠️  无有效温度数据，使用模拟温度 24.5°C")
             return 24.5  # 使用模拟温度
     except Exception as e:
         print(f"❌ 温度读取错误: {e}")
@@ -148,6 +156,9 @@ def test_command_generation(r_pwm, b_pwm):
 def main():
     """主测试函数"""
     print("🧪 MPPI集成系统测试")
+    print("=" * 50)
+    print(f"📱 配置信息:")
+    print(f"   温度设备: {TEMPERATURE_DEVICE_ID or '自动选择'}")
     print("=" * 50)
     
     # 1. 测试温度读取

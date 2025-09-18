@@ -7,6 +7,11 @@
 import sys
 import os
 
+# ==================== 配置宏定义 ====================
+# 温度传感器设备ID配置（修改此处即可切换设备）
+TEMPERATURE_DEVICE_ID = None  # None=自动选择, "T6ncwg=="=指定设备1, "L_6vSQ=="=指定设备2
+# =====================================================
+
 # 添加 riotee_sensor 目录到Python路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
 riotee_sensor_dir = os.path.join(current_dir, '..', 'Test', 'riotee_sensor')
@@ -20,8 +25,11 @@ except ImportError as e:
     sys.exit(1)
 
 def main():
+    print(f"📱 配置信息: 温度设备 = {TEMPERATURE_DEVICE_ID or '自动选择'}")
+    print("=" * 50)
+    
     # 读取温度数据
-    data = get_current_riotee(max_age_seconds=86400)
+    data = get_current_riotee(device_id=TEMPERATURE_DEVICE_ID, max_age_seconds=86400)
     
     if data:
         temp = data.get('temperature')
@@ -41,7 +49,10 @@ def main():
         else:
             print(f"❌ 设备 {device}: 温度数据无效")
     else:
-        print("❌ 无数据")
+        if TEMPERATURE_DEVICE_ID:
+            print(f"❌ 指定设备 {TEMPERATURE_DEVICE_ID} 无数据")
+        else:
+            print("❌ 无数据")
 
 if __name__ == "__main__":
     main()

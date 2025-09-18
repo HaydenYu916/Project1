@@ -19,8 +19,11 @@ PYTHON_CMD="python"
 # 显示使用说明
 echo "使用方法:"
 echo "  ./start_mppi_control.sh once          # 运行一次"
-echo "  ./start_mppi_control.sh continuous    # 连续运行（每分钟）"
+echo "  ./start_mppi_control.sh continuous    # 连续运行"
 echo "  ./start_mppi_control.sh test          # 运行测试"
+echo "  ./start_mppi_control.sh list-devices  # 列出可用设备"
+echo ""
+echo "💡 提示: 修改代码顶部的宏定义来配置设备ID和其他参数"
 echo ""
 
 # 根据参数运行
@@ -37,9 +40,15 @@ case "$1" in
         echo "🧪 运行集成测试..."
         $PYTHON_CMD test_mppi_integration.py
         ;;
+    "list-devices")
+        echo "📱 列出可用设备..."
+        $PYTHON_CMD mppi_control_loop.py list-devices
+        ;;
     *)
         echo "❌ 无效参数"
-        echo "用法: $0 [once|continuous|test]"
+        echo "用法: $0 [once|continuous|test|list-devices]"
+        echo ""
+        echo "💡 提示: 修改代码顶部的宏定义来配置设备ID和其他参数"
         exit 1
         ;;
 esac

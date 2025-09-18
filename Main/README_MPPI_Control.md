@@ -39,7 +39,27 @@ python mppi_control_loop.py continuous
 python mppi_control_loop.py continuous 2  # 每2分钟运行一次
 ```
 
-### 4. 运行集成测试
+### 4. 配置设备ID（宏定义方式）
+
+所有脚本都支持通过修改代码顶部的宏定义来配置设备ID：
+
+```python
+# 在以下文件顶部都有相同的宏定义：
+# - mppi_control_loop.py
+# - test_mppi_integration.py  
+# - quick_temp.py
+
+TEMPERATURE_DEVICE_ID = "T6ncwg=="  # 指定设备ID
+# TEMPERATURE_DEVICE_ID = None      # 自动选择设备
+```
+
+### 5. 快速温度查看
+
+```bash
+python quick_temp.py
+```
+
+### 6. 运行集成测试
 
 ```bash
 python test_mppi_integration.py
@@ -150,14 +170,31 @@ python test_mppi_integration.py
 
 ### 调整控制参数
 
-可以在 `MPPIControlLoop.__init__` 方法中调整各种参数：
+修改代码顶部的宏定义来调整各种参数：
 
 ```python
-# 调整目标温度
-self.target_temp = 26.0
+# ==================== 配置宏定义 ====================
+# 温度传感器设备ID配置
+TEMPERATURE_DEVICE_ID = "T6ncwg=="  # None=自动选择
 
+# 控制循环间隔（分钟）
+CONTROL_INTERVAL_MINUTES = 2
+
+# 目标温度（°C）
+TARGET_TEMPERATURE = 26.0
+
+# 红蓝比例键
+RB_RATIO_KEY = "3:1"
+# =====================================================
+```
+
+### 高级参数调整
+
+如需调整MPPI控制器内部参数，可在 `MPPIControlLoop.__init__` 方法中修改：
+
+```python
 # 调整MPPI参数
-self.controller = LEDMPPIController(
+self.controller = LEDMPCController(
     horizon=15,           # 增加预测时域
     num_samples=2000,     # 增加采样数量
     temperature=0.5,      # 降低温度参数

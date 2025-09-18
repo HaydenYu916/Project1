@@ -12,6 +12,20 @@ import json
 from datetime import datetime
 import numpy as np
 
+# ==================== 配置宏定义 ====================
+# 温度传感器设备ID配置（修改此处即可切换设备）
+TEMPERATURE_DEVICE_ID = None  # None=自动选择, "T6ncwg=="=指定设备1, "L_6vSQ=="=指定设备2
+
+# 控制循环间隔（分钟）
+CONTROL_INTERVAL_MINUTES = 1
+
+# 目标温度（°C）
+TARGET_TEMPERATURE = 25.0
+
+# 红蓝比例键
+RB_RATIO_KEY = "5:1"
+# =====================================================
+
 # 添加路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
 riotee_sensor_dir = os.path.join(current_dir, '..', 'Test', 'riotee_sensor')
@@ -36,9 +50,13 @@ class MPPIControlLoop:
         """初始化MPPI控制循环"""
         print("🚀 初始化MPPI控制循环...")
         
+        # 使用宏定义配置
+        self.temperature_device_id = TEMPERATURE_DEVICE_ID
+        self.target_temp = TARGET_TEMPERATURE
+        
         # 初始化LED植物模型
         self.plant = LEDPlant(
-            model_key="5:1",  # 红蓝比例 5:1
+            model_key=RB_RATIO_KEY,  # 使用宏定义的红蓝比例
             use_efficiency=False,  # 暂时关闭效率模型
             heat_scale=1.0
         )
@@ -69,21 +87,24 @@ class MPPIControlLoop:
             temp_max=29.0    # 温度最大值
         )
         
-        # 目标温度
-        self.target_temp = 25.0
-        
         # 设备IP地址
         self.devices = DEVICES
         
         print("✅ MPPI控制循环初始化完成")
         print(f"   目标温度: {self.target_temp}°C")
-        print(f"   设备列表: {list(self.devices.keys())}")
-        print(f"   红蓝比例: 5:1")
+        print(f"   温度设备: {self.temperature_device_id or '自动选择'}")
+        print(f"   LED设备列表: {list(self.devices.keys())}")
+        print(f"   红蓝比例: {RB_RATIO_KEY}")
+        print(f"   控制间隔: {CONTROL_INTERVAL_MINUTES}分钟")
     
     def read_temperature(self):
         """读取当前温度数据"""
         try:
-            data = get_current_riotee(max_age_seconds=86400)  # 放宽到24小时
+            # 使用指定的设备ID或自动选择
+            data = get_current_riotee(
+                device_id=self.temperature_device_id, 
+                max_age_seconds=86400
+            )
             
             if data and data.get('temperature') is not None:
                 temp = data['temperature']
@@ -101,7 +122,10 @@ class MPPIControlLoop:
                 print(f"🌡️  {status} 温度读取: {temp:.2f}°C (设备: {device_id}, {age:.0f}秒前)")
                 return temp, True
             else:
-                print("⚠️  无有效温度数据，使用模拟温度 24.5°C")
+                if self.temperature_device_id:
+                    print(f"⚠️  指定设备 {self.temperature_device_id} 无有效温度数据，使用模拟温度 24.5°C")
+                else:
+                    print("⚠️  无有效温度数据，使用模拟温度 24.5°C")
                 return 24.5, True  # 使用模拟温度
                 
         except Exception as e:
@@ -242,6 +266,12 @@ def main():
     """主函数"""
     print("🌱 MPPI LED控制循环系统")
     print("=" * 50)
+    print(f"📱 配置信息:")
+    print(f"   温度设备: {TEMPERATURE_DEVICE_ID or '自动选择'}")
+    print(f"   目标温度: {TARGET_TEMPERATURE}°C")
+    print(f"   红蓝比例: {RB_RATIO_KEY}")
+    print(f"   控制间隔: {CONTROL_INTERVAL_MINUTES}分钟")
+    print("=" * 50)
     
     # 创建控制循环实例
     control_loop = MPPIControlLoop()
@@ -254,18 +284,29 @@ def main():
             control_loop.run_control_cycle()
         elif sys.argv[1] == "continuous":
             # 连续运行
-            interval = 1
-            if len(sys.argv) > 2:
-                try:
-                    interval = int(sys.argv[2])
-                except ValueError:
-                    print("❌ 无效的间隔时间，使用默认值1分钟")
-            control_loop.run_continuous(interval)
+            print(f"🔄 开始连续控制循环...")
+            control_loop.run_continuous(CONTROL_INTERVAL_MINUTES)
+        elif sys.argv[1] == "list-devices":
+            # 列出可用设备
+            print("📱 可用温度设备:")
+            try:
+                from __init__ import get_riotee_devices
+                devices = get_riotee_devices()
+                if devices:
+                    for device in devices:
+                        print(f"   - {device}")
+                else:
+                    print("   无可用设备")
+            except Exception as e:
+                print(f"❌ 获取设备列表失败: {e}")
         else:
             print("❌ 无效参数")
             print("用法:")
-            print("  python mppi_control_loop.py once          # 运行一次")
-            print("  python mppi_control_loop.py continuous [间隔分钟]  # 连续运行")
+            print("  python mppi_control_loop.py once")
+            print("  python mppi_control_loop.py continuous")
+            print("  python mppi_control_loop.py list-devices")
+            print("")
+            print("💡 提示: 修改代码顶部的宏定义来配置设备ID和其他参数")
     else:
         # 默认运行一次
         print("🔄 运行单次控制循环...")
