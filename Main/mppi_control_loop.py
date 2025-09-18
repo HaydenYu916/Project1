@@ -22,6 +22,9 @@ CONTROL_INTERVAL_MINUTES = 1
 
 # 红蓝比例键
 RB_RATIO_KEY = "5:1"
+
+# 日志文件路径
+LOG_FILE = "mppi_control_log.txt"
 # =====================================================
 
 # 添加路径
@@ -50,6 +53,7 @@ class MPPIControlLoop:
         
         # 使用宏定义配置
         self.temperature_device_id = TEMPERATURE_DEVICE_ID
+        self.log_file = LOG_FILE
         
         # 初始化LED植物模型
         self.plant = LEDPlant(
@@ -92,6 +96,32 @@ class MPPIControlLoop:
         print(f"   LED设备列表: {list(self.devices.keys())}")
         print(f"   红蓝比例: {RB_RATIO_KEY}")
         print(f"   控制间隔: {CONTROL_INTERVAL_MINUTES}分钟")
+        
+        # 初始化日志文件
+        self.init_log_file()
+    
+    def init_log_file(self):
+        """初始化日志文件"""
+        try:
+            if not os.path.exists(self.log_file):
+                with open(self.log_file, 'w', encoding='utf-8') as f:
+                    f.write("# MPPI控制循环日志\n")
+                    f.write("# 格式: 时间戳|输入温度|红光PWM|蓝光PWM|成功状态|成本\n")
+                    f.write("# 时间戳格式: YYYY-MM-DD HH:MM:SS\n")
+                    f.write("# 成功状态: True/False\n")
+                    f.write("# 成本: 数值或N/A\n")
+                    f.write("# " + "="*80 + "\n")
+        except Exception as e:
+            print(f"⚠️  日志文件初始化失败: {e}")
+    
+    def log_control_cycle(self, timestamp, input_temp, output_r_pwm, output_b_pwm, success, cost=None):
+        """记录控制循环日志"""
+        try:
+            cost_str = f"{cost:.2f}" if cost is not None else "N/A"
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write(f"{timestamp}|{input_temp:.2f}|{output_r_pwm:.2f}|{output_b_pwm:.2f}|{success}|{cost_str}\n")
+        except Exception as e:
+            print(f"⚠️  日志记录失败: {e}")
     
     def read_temperature(self):
         """读取当前温度数据"""
@@ -149,14 +179,14 @@ class MPPIControlLoop:
                 print(f"   总PWM: {r_pwm + b_pwm:.2f}")
                 print(f"   成本: {cost:.2f}")
                 
-                return r_pwm, b_pwm, True
+                return r_pwm, b_pwm, True, cost
             else:
                 print("❌ MPPI求解失败")
-                return None, None, False
+                return None, None, False, None
                 
         except Exception as e:
             print(f"❌ MPPI控制错误: {e}")
-            return None, None, False
+            return None, None, False, None
     
     def send_pwm_commands(self, r_pwm, b_pwm):
         """发送PWM命令到设备"""
@@ -215,28 +245,34 @@ class MPPIControlLoop:
     
     def run_control_cycle(self):
         """运行一次完整的控制循环"""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         print(f"\n{'='*60}")
-        print(f"🔄 控制循环开始 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"🔄 控制循环开始 - {timestamp}")
         print(f"{'='*60}")
         
         # 1. 读取温度
         current_temp, temp_ok = self.read_temperature()
         if not temp_ok:
             print("❌ 温度读取失败，跳过本次控制循环")
+            self.log_control_cycle(timestamp, 0.0, 0.0, 0.0, False)
             return False
         
         # 2. 运行MPPI控制
-        r_pwm, b_pwm, control_ok = self.run_mppi_control(current_temp)
+        r_pwm, b_pwm, control_ok, cost = self.run_mppi_control(current_temp)
         if not control_ok:
             print("❌ MPPI控制失败，跳过本次控制循环")
+            self.log_control_cycle(timestamp, current_temp, 0.0, 0.0, False)
             return False
         
         # 3. 发送PWM命令
         commands, send_ok = self.send_pwm_commands(r_pwm, b_pwm)
         if not send_ok:
             print("❌ 命令发送失败")
+            self.log_control_cycle(timestamp, current_temp, r_pwm, b_pwm, False, cost)
             return False
         
+        # 4. 记录成功日志
+        self.log_control_cycle(timestamp, current_temp, r_pwm, b_pwm, True, cost)
         print(f"✅ 控制循环完成")
         return True
     
