@@ -19,7 +19,7 @@ TEMPERATURE_DEVICE_ID = None  # None=自动选择, "T6ncwg=="=指定设备1, "L_
 current_dir = os.path.dirname(os.path.abspath(__file__))
 riotee_sensor_dir = os.path.join(current_dir, '..', 'Test', 'riotee_sensor')
 mppi_dir = os.path.join(current_dir, '..', 'AA_Test_9_16')
-controller_dir = os.path.join(current_dir, '..', 'aioshelly', 'my_src')
+controller_dir = os.path.join(current_dir, '..', 'aioshelly', 'shelly_src')
 
 # 确保MPPI目录在路径最前面，以便导入numpy等依赖
 sys.path.insert(0, mppi_dir)
@@ -107,7 +107,7 @@ def test_command_generation(r_pwm, b_pwm):
     """测试命令生成"""
     print("\n📡 测试命令生成...")
     try:
-        from controller import DEVICES
+        from shelly_controller import DEVICES
         import numpy as np
         
         if r_pwm is None or b_pwm is None:

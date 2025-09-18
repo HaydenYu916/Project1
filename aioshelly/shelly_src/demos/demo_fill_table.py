@@ -3,7 +3,7 @@ import sys
 import time
 from pathlib import Path
 
-from controller import rpc, DEVICES
+from shelly_controller import rpc, DEVICES
 
 
 DEFAULT_INPUT = "Parsed_log_table.csv"

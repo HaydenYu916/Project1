@@ -32,7 +32,7 @@ LOG_FILE = "control_simulate_log.csv"
 current_dir = os.path.dirname(os.path.abspath(__file__))
 riotee_sensor_dir = os.path.join(current_dir, '..', 'Test', 'riotee_sensor')
 mppi_dir = os.path.join(current_dir, '..', 'AA_Test_9_16')
-controller_dir = os.path.join(current_dir, '..', 'aioshelly', 'my_src')
+controller_dir = os.path.join(current_dir, '..', 'aioshelly', 'shelly_src')
 
 # 确保MPPI目录在路径最前面，以便导入numpy等依赖
 sys.path.insert(0, mppi_dir)
@@ -42,7 +42,7 @@ sys.path.insert(0, controller_dir)
 try:
     from __init__ import get_current_riotee
     from mppi import LEDPlant, LEDMPPIController
-    from controller import rpc, DEVICES
+    from shelly_controller import rpc, DEVICES
 except ImportError as e:
     print(f"❌ 导入失败: {e}")
     sys.exit(1)

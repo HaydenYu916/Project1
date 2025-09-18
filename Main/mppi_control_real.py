@@ -18,7 +18,7 @@ import numpy as np
 TEMPERATURE_DEVICE_ID = None  # None=自动选择, "T6ncwg=="=指定设备1, "L_6vSQ=="=指定设备2
 
 # 控制循环间隔（分钟）
-CONTROL_INTERVAL_MINUTES = 1
+CONTROL_INTERVAL_MINUTES = 10
 
 # 红蓝比例键
 RB_RATIO_KEY = "5:1"
@@ -34,7 +34,8 @@ STATUS_CHECK_DELAY = 3
 current_dir = os.path.dirname(os.path.abspath(__file__))
 riotee_sensor_dir = os.path.join(current_dir, '..', 'Test', 'riotee_sensor')
 mppi_dir = os.path.join(current_dir, '..', 'AA_Test_9_16')
-controller_dir = os.path.join(current_dir, '..', 'aioshelly', 'my_src')
+# controller sources path updated after renaming to shelly_src
+controller_dir = os.path.join(current_dir, '..', 'aioshelly', 'shelly_src')
 
 # 确保MPPI目录在路径最前面，以便导入numpy等依赖
 sys.path.insert(0, mppi_dir)
@@ -44,7 +45,7 @@ sys.path.insert(0, controller_dir)
 try:
     from __init__ import get_current_riotee
     from mppi import LEDPlant, LEDMPPIController
-    from controller import rpc, DEVICES
+    from shelly_controller import rpc, DEVICES
 except ImportError as e:
     print(f"❌ 导入失败: {e}")
     sys.exit(1)
