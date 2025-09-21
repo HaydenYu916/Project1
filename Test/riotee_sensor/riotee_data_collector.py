@@ -549,7 +549,7 @@ def process_device_data(device_id, data_arr, update_type="DATA"):
     新增: 光谱传感器增益值和设备休眠时间字段
     特性: 类似aioshelly的多文件日志系统
     """
-    global record_id, csv_writer_all, csv_writer_summary, device_last_state
+    global record_id, csv_writer_all, csv_writer_summary, device_last_state, csv_file_all, csv_file_summary, fieldnames
     
     record_id += 1
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
@@ -733,9 +733,26 @@ def process_device_data(device_id, data_arr, update_type="DATA"):
         'sleep_time': sleep_time,
     }
     
-    # 写入全量文件（所有数据）
-    csv_writer_all.writerow(row_all)
-    csv_file_all.flush()
+    # 写入全量文件（所有数据）- 添加异常处理
+    try:
+        csv_writer_all.writerow(row_all)
+        csv_file_all.flush()
+        logging.debug(f"[CSV] 成功写入全量数据: {device_id} - ID:{record_id}")
+    except Exception as e:
+        logging.error(f"[CSV错误] 写入全量数据失败: {e}")
+        logging.error(f"[CSV错误] 设备: {device_id}, 数据ID: {record_id}")
+        # 尝试重新打开文件
+        try:
+            logging.info("[CSV恢复] 尝试重新打开CSV文件...")
+            csv_file_all.close()
+            csv_file_all = open("logs/riotee_data_all.csv", 'a', newline='')
+            csv_writer_all = csv.DictWriter(csv_file_all, fieldnames=fieldnames)
+            csv_writer_all.writerow(row_all)
+            csv_file_all.flush()
+            logging.info("[CSV恢复] 文件重新打开成功，数据已写入")
+        except Exception as e2:
+            logging.error(f"[CSV严重错误] 无法恢复CSV写入: {e2}")
+            return  # 如果无法写入CSV，直接返回，避免后续处理
     
     # 智能摘要记录：首次发现设备或重要参数变化时写入摘要文件
     should_write_summary = False
@@ -774,11 +791,26 @@ def process_device_data(device_id, data_arr, update_type="DATA"):
             update_type = "VOLTAGE_CHANGE"
             row_summary['update_type'] = update_type
     
-    # 写入摘要文件（仅重要变化）
+    # 写入摘要文件（仅重要变化）- 添加异常处理
     if should_write_summary:
-        csv_writer_summary.writerow(row_summary)
-        csv_file_summary.flush()
-        logging.info(f"[摘要] 记录重要变化: {device_id} - {update_type}")
+        try:
+            csv_writer_summary.writerow(row_summary)
+            csv_file_summary.flush()
+            logging.info(f"[摘要] 记录重要变化: {device_id} - {update_type}")
+        except Exception as e:
+            logging.error(f"[CSV错误] 写入摘要数据失败: {e}")
+            logging.error(f"[CSV错误] 设备: {device_id}, 更新类型: {update_type}")
+            # 尝试重新打开摘要文件
+            try:
+                logging.info("[CSV恢复] 尝试重新打开摘要CSV文件...")
+                csv_file_summary.close()
+                csv_file_summary = open("logs/riotee_data_summary.csv", 'a', newline='')
+                csv_writer_summary = csv.DictWriter(csv_file_summary, fieldnames=fieldnames)
+                csv_writer_summary.writerow(row_summary)
+                csv_file_summary.flush()
+                logging.info("[CSV恢复] 摘要文件重新打开成功，数据已写入")
+            except Exception as e2:
+                logging.error(f"[CSV严重错误] 无法恢复摘要CSV写入: {e2}")
     
     # 更新设备状态
     device_last_state[device_id] = {

@@ -18,7 +18,7 @@ import numpy as np
 TEMPERATURE_DEVICE_ID = None  # None=自动选择, "T6ncwg=="=指定设备1, "L_6vSQ=="=指定设备2
 
 # 控制循环间隔（分钟）
-CONTROL_INTERVAL_MINUTES = 10
+CONTROL_INTERVAL_MINUTES = 30
 
 # 红蓝比例键
 RB_RATIO_KEY = "5:1"
