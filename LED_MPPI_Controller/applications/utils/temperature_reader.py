@@ -15,7 +15,7 @@ TEMPERATURE_DEVICE_ID = "L_6vSQ=="  # None=自动选择, "T6ncwg=="=指定设备
 # 添加路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.join(current_dir, '..', '..')
-riotee_sensor_dir = os.path.join(project_root, '..', 'Test', 'riotee_sensor')
+riotee_sensor_dir = os.path.join(project_root, '..', 'Sensor', 'riotee_sensor')
 riotee_sensor_path = os.path.abspath(riotee_sensor_dir)
 sys.path.insert(0, riotee_sensor_path)
 

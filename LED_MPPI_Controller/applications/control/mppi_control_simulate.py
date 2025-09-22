@@ -33,8 +33,8 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(current_dir, "..", "..", "logs", "control_simulate_log.csv")
 project_root = os.path.join(current_dir, '..', '..')
 src_dir = os.path.join(project_root, 'src')
-riotee_sensor_dir = os.path.join(project_root, '..', 'Test', 'riotee_sensor')
-controller_dir = os.path.join(project_root, '..', 'shelly_src', 'src')
+riotee_sensor_dir = os.path.join(project_root, '..', 'Sensor', 'riotee_sensor')
+controller_dir = os.path.join(project_root, '..', 'Shelly', 'src')
 
 # 确保项目目录在路径中
 sys.path.insert(0, src_dir)
@@ -42,7 +42,24 @@ sys.path.insert(0, riotee_sensor_dir)
 sys.path.insert(0, controller_dir)
 
 try:
-    from __init__ import get_current_riotee
+    # 导入配置
+    config_dir = os.path.join(current_dir, '..', '..', 'config')
+    sys.path.insert(0, config_dir)
+    from app_config import DEFAULT_MODEL_NAME
+    
+    # 导入riotee函数
+    riotee_init_path = os.path.join(riotee_sensor_dir, '__init__.py')
+    if os.path.exists(riotee_init_path):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("riotee_init", riotee_init_path)
+        riotee_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(riotee_module)
+        get_current_riotee = riotee_module.get_current_riotee
+        get_riotee_devices = riotee_module.get_riotee_devices
+        get_device_avg_a1_raw = getattr(riotee_module, 'get_device_avg_a1_raw', None)
+    else:
+        raise ImportError(f"riotee __init__.py not found at {riotee_init_path}")
+    
     from mppi import LEDPlant, LEDMPPIController
     from shelly_controller import rpc, DEVICES
 except ImportError as e:
@@ -62,7 +79,8 @@ class MPPIControlLoop:
         self.plant = LEDPlant(
             model_key=RB_RATIO_KEY,  # 使用宏定义的红蓝比例
             use_efficiency=False,  # 暂时关闭效率模型
-            heat_scale=1.0
+            heat_scale=1.0,
+            model_name=DEFAULT_MODEL_NAME  # 使用配置文件中的模型名称
         )
         
         # 初始化MPPI控制器
@@ -86,6 +104,7 @@ class MPPIControlLoop:
         print(f"   LED设备列表: {list(self.devices.keys())}")
         print(f"   红蓝比例: {RB_RATIO_KEY}")
         print(f"   控制间隔: {CONTROL_INTERVAL_MINUTES}分钟")
+        print(f"   使用模型: {DEFAULT_MODEL_NAME}")
         
         # 初始化日志文件
         self.init_log_file()
@@ -93,6 +112,10 @@ class MPPIControlLoop:
     def init_log_file(self):
         """初始化日志文件"""
         try:
+            # 确保日志目录存在
+            log_dir = os.path.dirname(self.log_file)
+            if log_dir and not os.path.exists(log_dir):
+                os.makedirs(log_dir, exist_ok=True)
             if not os.path.exists(self.log_file):
                 with open(self.log_file, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
@@ -132,6 +155,20 @@ class MPPIControlLoop:
                 else:  # 超过5分钟
                     status = "🔴"
                 
+                # 如果模型为 solar_vol，尝试读取10分钟窗口内的A1_Raw均值
+                self.last_a1_avg = None
+                if 'solar_vol' in str(DEFAULT_MODEL_NAME).lower() and get_device_avg_a1_raw and device_id and device_id != 'Unknown':
+                    try:
+                        avg_info = get_device_avg_a1_raw(device_id, window_minutes=10)
+                        self.last_a1_avg = avg_info.get('avg')
+                        cnt = avg_info.get('count', 0)
+                        if self.last_a1_avg is not None and cnt > 0:
+                            print(f"🔆 A1_Raw(10min均值): {self.last_a1_avg:.2f} (n={cnt})")
+                        else:
+                            print("⚠️  A1_Raw近10分钟无有效数据，略过均值计算")
+                    except Exception as _:
+                        print("⚠️  A1_Raw均值读取失败，略过")
+
                 print(f"🌡️  {status} 温度读取: {temp:.2f}°C (设备: {device_id}, {age:.0f}秒前)")
                 return temp, True
             else:
@@ -259,7 +296,13 @@ class MPPIControlLoop:
             return False
         
         # 4. 记录成功日志
-        self.log_control_cycle(timestamp, current_temp, r_pwm, b_pwm, True, cost)
+        note = ""
+        if 'solar_vol' in str(DEFAULT_MODEL_NAME).lower():
+            if getattr(self, 'last_a1_avg', None) is not None:
+                note = f"A1_Raw_10min_avg={self.last_a1_avg:.2f}"
+            else:
+                note = "A1_Raw_10min_avg=N/A"
+        self.log_control_cycle(timestamp, current_temp, r_pwm, b_pwm, True, cost, note)
         print(f"✅ 控制循环完成")
         return True
     
@@ -289,6 +332,7 @@ def main():
     print(f"   温度设备: {TEMPERATURE_DEVICE_ID or '自动选择'}")
     print(f"   红蓝比例: {RB_RATIO_KEY}")
     print(f"   控制间隔: {CONTROL_INTERVAL_MINUTES}分钟")
+    print(f"   使用模型: {DEFAULT_MODEL_NAME}")
     print("=" * 50)
     
     # 创建控制循环实例

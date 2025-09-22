@@ -1,4 +1,4 @@
-# MPPI LED控制循环系统
+# 智能植物光照控制系统
 
 一个基于模型预测路径积分控制(MPPI)的智能LED植物光照控制系统，集成温度传感器、MPPI控制算法和LED设备控制。
 
@@ -9,23 +9,38 @@
 - **设备集成**: 支持Shelly智能开关控制LED设备
 - **自动化运行**: 支持每分钟自动运行控制循环
 - **实时监控**: 提供温度读取和系统状态监控
+- **数据收集**: 自动收集传感器数据并按PPFD时间段分组
 
 ## 📁 项目结构
 
 ```
 Project1/
-├── Main/                          # 主要控制脚本
-│   ├── mppi_control_loop.py      # MPPI控制循环主脚本
-│   ├── test_mppi_integration.py  # 集成测试脚本
-│   ├── start_mppi_control.sh     # 启动脚本
-│   ├── quick_temp.py             # 快速温度显示
-│   └── README_MPPI_Control.md    # 详细使用说明
-├── AA_Test_9_16/                 # MPPI算法和LED模型
-│   ├── mppi.py                   # MPPI控制器核心
-│   ├── led.py                    # LED热力学模型
-│   └── models/                   # 机器学习模型
-├── Test/riotee_sensor/           # 温度传感器模块
-└── aioshelly/my_src/             # Shelly设备控制
+├── LED_MPPI_Controller/          # MPPI控制核心模块
+│   ├── src/                     # 源代码
+│   │   ├── mppi.py             # MPPI控制器核心
+│   │   └── led.py              # LED热力学模型
+│   ├── applications/            # 实际应用脚本
+│   │   ├── control/            # 控制脚本
+│   │   ├── utils/              # 工具脚本
+│   │   └── scripts/            # 系统脚本
+│   ├── models/                 # 机器学习模型
+│   ├── tests/                  # 测试文件
+│   ├── examples/               # 示例代码
+│   └── docs/                   # 文档
+├── Shelly/                      # Shelly设备控制模块
+│   ├── src/                    # 源代码
+│   │   ├── shelly_controller.py # 核心控制器
+│   │   ├── shelly_listener.py   # 实时监听器
+│   │   └── shelly_system_manager.py # 系统管理器
+│   ├── tests/                  # 测试文件
+│   │   ├── pwm_scheduler.py    # PWM调度器
+│   │   ├── pwm_service.py      # PWM服务
+│   │   └── README_PWM_Scheduler.md # PWM调度器文档
+│   ├── examples/               # 示例代码
+│   └── config/                 # 配置文件
+└── Sensor/                      # 传感器数据收集模块
+    ├── riotee_sensor/          # Riotee传感器
+    └── logs/                   # 传感器数据日志
 ```
 
 ## 🚀 快速开始
@@ -33,36 +48,45 @@ Project1/
 ### 1. 环境要求
 
 - Python 3.8+
-- numpy
+- numpy, scikit-learn, matplotlib
 - 其他依赖见各模块requirements.txt
 
-### 2. 运行测试
+### 2. MPPI控制模块测试
 
 ```bash
-cd Main
-./start_mppi_control.sh test
+cd LED_MPPI_Controller
+python tests/test_all_models.py
 ```
 
-### 3. 运行单次控制循环
+### 3. Shelly设备控制
 
 ```bash
-cd Main
-./start_mppi_control.sh once
+cd Shelly
+python src/shelly_controller.py Red on
+python src/shelly_controller.py Blue brightness 50
 ```
 
-### 4. 连续运行控制循环
+### 4. PWM调度器运行
 
 ```bash
-cd Main
-./start_mppi_control.sh continuous
+cd Shelly
+python tests/pwm_service.py start
+```
+
+### 5. 传感器数据收集
+
+```bash
+cd Sensor/riotee_sensor
+python riotee_system_manager.py start
 ```
 
 ## 🎯 系统架构
 
 ```
-温度传感器数据 → MPPI控制器 → PWM命令 → LED设备
-     ↓              ↓           ↓
-  Riotee传感器   优化算法     Shelly设备
+Sensor模块 → LED_MPPI_Controller → Shelly模块 → LED设备
+    ↓              ↓                    ↓
+Riotee传感器    MPPI优化算法        Shelly设备
+温度/光谱数据   光合作用预测        PWM控制
 ```
 
 ## ⚙️ 控制参数
@@ -83,9 +107,9 @@ cd Main
 
 ## 🔧 配置说明
 
-### 设备配置
+### Shelly设备配置
 
-在 `aioshelly/my_src/controller.py` 中配置设备IP：
+在 `Shelly/config/device_config.py` 中配置设备IP：
 
 ```python
 DEVICES = {
@@ -96,7 +120,7 @@ DEVICES = {
 
 ### MPPI参数调整
 
-在 `Main/mppi_control_loop.py` 中调整控制参数：
+在 `LED_MPPI_Controller/applications/control/mppi_control_real.py` 中调整控制参数：
 
 ```python
 # 调整目标温度
@@ -109,6 +133,16 @@ self.controller = LEDMPPIController(
     temperature=1.0,      # 温度参数
     # ...
 )
+```
+
+### PWM调度器配置
+
+在 `Shelly/tests/src/extended_schedule_*.csv` 中配置时间表：
+
+```csv
+time,ppfd,r_pwm,b_pwm,phase,phase_name
+2025-09-19 07:00:00,100,12,9,heating1,Heating 1
+2025-09-19 07:30:00,200,30,10,heating1,Heating 1
 ```
 
 ## 📈 输出示例
@@ -132,17 +166,35 @@ self.controller = LEDMPPIController(
 
 ### 常见问题
 
-1. **温度读取失败**: 检查Riotee传感器数据文件
-2. **MPPI控制失败**: 检查模型文件是否正确加载
-3. **设备连接失败**: 检查网络连接和设备IP地址
+1. **温度读取失败**: 检查 `Sensor/riotee_sensor/logs/` 中的数据文件
+2. **MPPI控制失败**: 检查 `LED_MPPI_Controller/models/` 中的模型文件
+3. **设备连接失败**: 检查 `Shelly/config/device_config.py` 中的IP地址
+4. **PWM调度器不工作**: 检查 `Shelly/tests/` 中的时间表文件
 
 ### 调试模式
 
 ```bash
-python test_mppi_integration.py
+# MPPI模块调试
+cd LED_MPPI_Controller
+python tests/test_all_models.py
+
+# Shelly模块调试
+cd Shelly
+python tests/pwm_scheduler.py --status
+
+# 传感器模块调试
+cd Sensor/riotee_sensor
+python riotee_system_manager.py status
 ```
 
 ## 📝 更新日志
+
+### v2.0.0 (2025-09-19)
+- **项目重组**: 模块化架构，分为LED_MPPI_Controller、Shelly、Sensor三个独立模块
+- **PWM调度器**: 新增基于时间表的自动PWM控制功能
+- **数据收集**: 自动收集传感器数据并按PPFD时间段分组保存
+- **实时更新**: 支持实时数据更新和后台运行模式
+- **多模型支持**: 集成三种机器学习模型（solar_vol, ppfd, sp）
 
 ### v1.0.0 (2024-09-18)
 - 初始版本发布
@@ -161,5 +213,7 @@ python test_mppi_integration.py
 ## 🔗 相关链接
 
 - [GitHub仓库](https://github.com/HaydenYu916/Project1)
-- [详细使用说明](Main/README_MPPI_Control.md)
+- [LED MPPI控制器详细说明](LED_MPPI_Controller/README.md)
+- [Shelly设备控制说明](Shelly/README.md)
+- [PWM调度器使用说明](Shelly/tests/README_PWM_Scheduler.md)
 

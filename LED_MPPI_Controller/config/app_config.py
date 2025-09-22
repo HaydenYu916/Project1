@@ -55,8 +55,8 @@ DEFAULT_MODEL_NAME = "solar_vol"  # solar_vol, ppfd, sp
 
 # ==================== 路径配置 ====================
 # 外部依赖路径（相对于项目根目录）
-RIOTEE_SENSOR_DIR = "../Test/riotee_sensor"
-CONTROLLER_DIR = "../shelly_src/src"
+RIOTEE_SENSOR_DIR = "../Sensor/riotee_sensor"
+CONTROLLER_DIR = "../Shelly/src"
 
 # ==================== 调试配置 ====================
 # 是否启用详细日志
