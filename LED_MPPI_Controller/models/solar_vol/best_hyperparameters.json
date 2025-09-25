@@ -1,0 +1,25 @@
+{
+  "Linear Regression": {},
+  "Ridge Regression": {
+    "alpha": 0.01
+  },
+  "Lasso Regression": {
+    "alpha": 0.001
+  },
+  "SVR (RBF)": {
+    "C": 10.0,
+    "epsilon": 0.01,
+    "gamma": "auto"
+  },
+  "SVR (Linear)": {
+    "C": 10.0,
+    "epsilon": 0.2
+  },
+  "MLP Regressor": {
+    "alpha": 0.0001,
+    "hidden_layer_sizes": [
+      200,
+      100
+    ]
+  }
+}

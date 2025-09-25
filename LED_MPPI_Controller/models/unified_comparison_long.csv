@@ -1,0 +1,19 @@
+Variant,Model,MAE,MSE,RMSE,R²
+ppfd,SVR (RBF),0.4699,0.5051,0.7107,0.9866
+ppfd,MLP Regressor,0.6316,0.7275,0.8529,0.9807
+ppfd,Linear Regression,1.8856,5.2543,2.2922,0.8610
+ppfd,Lasso Regression,1.8849,5.2533,2.2920,0.8610
+ppfd,Ridge Regression,1.8856,5.2544,2.2922,0.8609
+ppfd,SVR (Linear),1.8846,5.2616,2.2938,0.8608
+solar_vol,SVR (RBF),0.4617,0.5049,0.7106,0.9866
+solar_vol,MLP Regressor,0.5773,0.5585,0.7473,0.9852
+solar_vol,Linear Regression,1.7394,4.3512,2.0860,0.8849
+solar_vol,Ridge Regression,1.7394,4.3512,2.0860,0.8848
+solar_vol,Lasso Regression,1.7409,4.3551,2.0869,0.8847
+solar_vol,SVR (Linear),1.8122,4.7244,2.1736,0.8750
+sp,SVR (RBF),0.5296,0.7409,0.8608,0.9804
+sp,MLP Regressor,0.6653,0.8017,0.8954,0.9788
+sp,Linear Regression,1.1138,1.9615,1.4005,0.9481
+sp,SVR (Linear),1.2124,2.5072,1.5834,0.9337
+sp,Ridge Regression,1.3627,3.0161,1.7367,0.9202
+sp,Lasso Regression,1.7196,4.6484,2.1560,0.8770

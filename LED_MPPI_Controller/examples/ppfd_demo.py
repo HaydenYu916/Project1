@@ -12,6 +12,8 @@
 import sys
 import os
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from pathlib import Path
 
@@ -21,23 +23,30 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from led import (
     DEFAULT_CALIB_CSV,
     PWMtoPPFDModel,
-    solve_pwm_for_target_ppfd,
-    _weights_from_key
+    solve_pwm_for_target_ppfd
 )
 
 
 def load_and_fit_model(csv_path: str) -> PWMtoPPFDModel:
     """加载标定数据并拟合线性模型"""
     print("============================================================")
-    print("1. 加载标定数据并拟合线性模型")
+    print("1. 加载标定数据并拟合分开的线性模型")
     print("============================================================")
     
     # 创建模型并拟合
     model = PWMtoPPFDModel().fit(csv_path)
     
     print(f"标定数据文件: {csv_path}")
-    print(f"可用比例键: {list(model.by_key.keys())}")
-    print(f"整体系数: a_r={model.overall.a_r:.3f}, a_b={model.overall.a_b:.3f}, intercept={model.overall.intercept:.3f}")
+    print(f"可用标签: {model.list_labels()}")
+    print()
+    
+    # 显示每个标签的拟合结果
+    print("拟合摘要:")
+    summary = model.get_fit_summary()
+    for label, info in summary.items():
+        print(f"  {label}:")
+        print(f"    R_PWM = {info['alpha']:.4f} × PPFD + {info['beta']:.2f} (R²={info['r_squared_r']:.3f})")
+        print(f"    B_PWM = {info['gamma']:.4f} × PPFD + {info['delta']:.2f} (R²={info['r_squared_b']:.3f})")
     print()
     
     return model
@@ -46,243 +55,215 @@ def load_and_fit_model(csv_path: str) -> PWMtoPPFDModel:
 def demo_forward_prediction(model: PWMtoPPFDModel):
     """演示前向预测"""
     print("============================================================")
-    print("2. 前向预测演示")
+    print("2. 前向预测演示（根据PPFD预测PWM）")
     print("============================================================")
     
-    # 测试不同总PWM下的PPFD预测
-    test_pwms = [20, 40, 60, 80, 100]
-    keys = list(model.by_key.keys())[:3]  # 测试前3个比例
+    # 测试不同PPFD下的PWM预测
+    test_ppfds = [100, 200, 300, 400, 500]
+    labels = model.list_labels()[:3]  # 测试前3个标签
     
-    for key in keys:
-        print(f"比例 {key}:")
-        for total_pwm in test_pwms:
-            # 使用权重分配计算R_PWM和B_PWM
-            w_r, w_b = _weights_from_key(key)
-            r_pwm = total_pwm * w_r
-            b_pwm = total_pwm * w_b
-            ppfd_pred = model.predict(r_pwm=r_pwm, b_pwm=b_pwm, key=key)
-            print(f"  R_PWM={r_pwm:4.1f}%, B_PWM={b_pwm:4.1f}%, Total={total_pwm:3d}% → PPFD={ppfd_pred:6.1f} μmol/m²/s")
+    for label in labels:
+        print(f"标签 {label}:")
+        for ppfd in test_ppfds:
+            try:
+                r_pwm, b_pwm = model.predict_pwm(ppfd=ppfd, label=label)
+                total_pwm = r_pwm + b_pwm
+                print(f"  PPFD={ppfd:3d} μmol/m²/s → R_PWM={r_pwm:5.1f}%, B_PWM={b_pwm:5.1f}%, Total={total_pwm:5.1f}%")
+            except Exception as e:
+                print(f"  PPFD={ppfd:3d} μmol/m²/s → 预测失败: {e}")
         print()
 
 
 def demo_reverse_solving(model: PWMtoPPFDModel):
     """演示反向求解"""
     print("============================================================")
-    print("3. 反向求解演示")
+    print("3. 反向求解演示（使用solve_pwm_for_target_ppfd函数）")
     print("============================================================")
     
     # 测试不同目标PPFD下的PWM求解
     target_ppfds = [100, 200, 300, 400, 500]
-    keys = list(model.by_key.keys())[:3]  # 测试前3个比例
+    labels = model.list_labels()[:3]  # 测试前3个标签
     
-    for key in keys:
-        print(f"比例 {key}:")
+    for label in labels:
+        print(f"标签 {label}:")
         for target_ppfd in target_ppfds:
             try:
                 r_pwm, b_pwm, total_pwm = solve_pwm_for_target_ppfd(
                     model=model,
                     target_ppfd=target_ppfd,
-                    key=key,
-                    integer_output=True
+                    label=label,
+                    integer_output=False
                 )
-                print(f"  Target PPFD={target_ppfd:3d} → R_PWM={r_pwm:3d}%, B_PWM={b_pwm:3d}%, Total={total_pwm:3d}%")
+                print(f"  Target PPFD={target_ppfd:3d} → R_PWM={r_pwm:5.1f}%, B_PWM={b_pwm:5.1f}%, Total={total_pwm:5.1f}%")
             except Exception as e:
                 print(f"  Target PPFD={target_ppfd:3d} → 求解失败: {e}")
         print()
 
 
 def plot_model_fitting(model: PWMtoPPFDModel, save_path: str = None):
-    """绘制线性模型拟合质量 - 分开显示红蓝LED"""
+    """Plot separated fitting model quality: PPFD vs PWM"""
     print("=" * 60)
-    print("线性模型拟合质量可视化")
+    print("Separated Fitting Model Quality Visualization")
     print("=" * 60)
-    
-    # 获取可用的比例键
-    keys = list(model.by_key.keys())
-    if not keys:
-        print("没有可用的比例键数据")
+
+    labels = model.list_labels()
+    if not labels:
+        print("No available label data")
         return
-    
-    # 创建子图 - 每个比例两个子图：红LED和蓝LED
-    fig, axes = plt.subplots(len(keys), 2, figsize=(15, 4*len(keys)))
-    if len(keys) == 1:
-        axes = axes.reshape(1, -1)
-    
-    for i, key in enumerate(keys):
-        coeffs = model.by_key[key]
+
+    fig, axes = plt.subplots(len(labels), 2, figsize=(15, 4 * len(labels)))
+    if len(labels) == 1:
+        axes = np.array([axes]).reshape(1, -1)
+
+    import csv
+    for i, label in enumerate(labels):
+        coeffs = model.by_label[label]
         
-        # 加载原始数据用于绘制散点
-        import csv
+        # 载入该标签的数据
+        ppfds = []
         r_pwms = []
         b_pwms = []
-        ppfds = []
-        
         with open(model.csv_path, newline="", encoding="utf-8") as f:
             reader = csv.DictReader((line for line in f if line.strip() and not line.lstrip().startswith("#")))
             for row in reader:
-                row_key = row.get("R:B") or row.get("ratio") or row.get("Key") or row.get("KEY")
-                if row_key == key:
+                row_label = row.get("Label") or row.get("LABEL") or row.get("KEY") or row.get("Key") or row.get("R:B") or row.get("ratio")
+                if row_label and row_label.lower().replace(" ", "") == label.lower().replace(" ", ""):
+                    ppfd = float(row.get("PPFD", 0))
                     r_pwm = float(row.get("R_PWM", 0))
                     b_pwm = float(row.get("B_PWM", 0))
-                    ppfd = float(row.get("PPFD", 0))
+                    ppfds.append(ppfd)
                     r_pwms.append(r_pwm)
                     b_pwms.append(b_pwm)
-                    ppfds.append(ppfd)
-        
-        # 左图：红LED
+
+        # Left plot: PPFD vs R_PWM
         ax_r = axes[i, 0]
-        ax_r.scatter(r_pwms, ppfds, c='red', s=50, alpha=0.7, label=f'Red LED Data ({len(r_pwms)} points)')
-        
-        # 绘制红LED拟合线（B_PWM=0）
-        if r_pwms:
-            r_min, r_max = min(r_pwms), max(r_pwms)
-            r_line = np.linspace(0, r_max, 100)
-            y_r_line = [coeffs.predict(r_pwm=r, b_pwm=0) for r in r_line]
-            ax_r.plot(r_line, y_r_line, 'r-', linewidth=2, label=f'Red LED Fit')
+        if ppfds:
+            ax_r.scatter(ppfds, r_pwms, c="#ff4444", s=50, alpha=0.7, label=f"Data ({len(ppfds)} points)")
             
-            # 计算红LED的R²
-            y_r_pred = [coeffs.predict(r_pwm=r_pwms[j], b_pwm=b_pwms[j]) for j in range(len(r_pwms))]
-            ss_res = sum((y - y_r_pred[j])**2 for j, y in enumerate(ppfds))
-            ss_tot = sum((y - np.mean(ppfds))**2 for y in ppfds)
-            r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-            
-            # 计算平均误差
-            errors = [abs(y_r_pred[j] - ppfds[j]) for j in range(len(ppfds))]
-            mean_error = sum(errors) / len(errors)
-        else:
-            r_squared = 0
-            mean_error = 0
+            # Draw fitting line
+            ppfd_line = np.linspace(min(ppfds), max(ppfds), 100)
+            r_pwm_line = [coeffs.predict_r_pwm(p) for p in ppfd_line]
+            ax_r.plot(ppfd_line, r_pwm_line, '-', color='#cc0000', linewidth=2, 
+                     label=f'R_PWM = {coeffs.alpha:.4f}×PPFD + {coeffs.beta:.2f}')
         
-        ax_r.set_title(f'Ratio {key} - Red LED\nPPFD = {coeffs.a_r:.2f}×R_PWM + {coeffs.a_b:.2f}×B_PWM + {coeffs.intercept:.1f}\nR² = {r_squared:.3f}, Mean Error = {mean_error:.1f}')
-        ax_r.set_xlabel('Red PWM (%)')
-        ax_r.set_ylabel('PPFD (μmol/m²/s)')
+        ax_r.set_title(f"Label {label} - Red Channel\nR² = {coeffs.r_squared_r:.3f}")
+        ax_r.set_xlabel('PPFD (μmol/m²/s)')
+        ax_r.set_ylabel('R_PWM (%)')
         ax_r.grid(True, alpha=0.3)
         ax_r.legend()
-        
-        # 右图：蓝LED
+
+        # Right plot: PPFD vs B_PWM
         ax_b = axes[i, 1]
-        ax_b.scatter(b_pwms, ppfds, c='blue', s=50, alpha=0.7, label=f'Blue LED Data ({len(b_pwms)} points)')
+        if ppfds:
+            ax_b.scatter(ppfds, b_pwms, c="#4444ff", s=50, alpha=0.7, label=f"Data ({len(ppfds)} points)")
+            
+            # Draw fitting line
+            ppfd_line = np.linspace(min(ppfds), max(ppfds), 100)
+            b_pwm_line = [coeffs.predict_b_pwm(p) for p in ppfd_line]
+            ax_b.plot(ppfd_line, b_pwm_line, '-', color='#0000cc', linewidth=2,
+                     label=f'B_PWM = {coeffs.gamma:.4f}×PPFD + {coeffs.delta:.2f}')
         
-        # 绘制蓝LED拟合线（R_PWM=0）
-        if b_pwms:
-            b_min, b_max = min(b_pwms), max(b_pwms)
-            b_line = np.linspace(0, b_max, 100)
-            y_b_line = [coeffs.predict(r_pwm=0, b_pwm=b) for b in b_line]
-            ax_b.plot(b_line, y_b_line, 'b-', linewidth=2, label=f'Blue LED Fit')
-        
-        ax_b.set_title(f'Ratio {key} - Blue LED\nPPFD = {coeffs.a_r:.2f}×R_PWM + {coeffs.a_b:.2f}×B_PWM + {coeffs.intercept:.1f}')
-        ax_b.set_xlabel('Blue PWM (%)')
-        ax_b.set_ylabel('PPFD (μmol/m²/s)')
+        ax_b.set_title(f"Label {label} - Blue Channel\nR² = {coeffs.r_squared_b:.3f}")
+        ax_b.set_xlabel('PPFD (μmol/m²/s)')
+        ax_b.set_ylabel('B_PWM (%)')
         ax_b.grid(True, alpha=0.3)
         ax_b.legend()
-    
+
     plt.tight_layout()
-    
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"图表已保存到: {save_path}")
-    
+        print(f"Chart saved to: {save_path}")
     plt.show()
 
 
 def plot_comparison(model: PWMtoPPFDModel, save_path: str = None):
-    """绘制不同比例的对比图"""
+    """Plot model comparison across different labels"""
     print("=" * 60)
-    print("不同比例下的线性模型对比")
+    print("Model Comparison Across Different Labels")
     print("=" * 60)
+
+    labels = model.list_labels()
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+
+    # Top left: R_PWM slope comparison across labels
+    alpha_values = []
+    r_squared_r_values = []
+    for label in labels:
+        coeffs = model.by_label[label]
+        alpha_values.append(coeffs.alpha)
+        r_squared_r_values.append(coeffs.r_squared_r)
     
-    # 测试不同总PWM下的PPFD输出
-    total_pwms = np.linspace(0, 120, 25)
-    
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-    
-    # 左图：总PWM vs PPFD
-    for key, coeffs in model.by_key.items():
-        w_r, w_b = _weights_from_key(key)
-        ppfds = []
-        for total_pwm in total_pwms:
-            r_pwm = total_pwm * w_r
-            b_pwm = total_pwm * w_b
-            ppfd_pred = coeffs.predict(r_pwm, b_pwm)
-            ppfds.append(ppfd_pred)
-        ax1.plot(total_pwms, ppfds, 'o-', label=f'Ratio {key}', linewidth=2, markersize=4)
-    
-    ax1.set_xlabel('Total PWM (%)')
-    ax1.set_ylabel('PPFD (μmol/m²/s)')
-    ax1.set_title('Simple Linear Models: PPFD vs Total PWM')
+    bars1 = ax1.bar(labels, alpha_values, alpha=0.7, color='#ff4444')
+    ax1.set_xlabel('Label')
+    ax1.set_ylabel('R_PWM Slope (α)')
+    ax1.set_title('Red Channel Slope Comparison')
     ax1.grid(True, alpha=0.3)
-    ax1.legend()
     
-    # 右图：系数对比
-    keys = list(model.by_key.keys())
-    # 使用等效斜率：a_r * w_r + a_b * w_b
-    slopes = []
-    for key in keys:
-        coeffs = model.by_key[key]
-        w_r, w_b = _weights_from_key(key)
-        equiv_slope = coeffs.a_r * w_r + coeffs.a_b * w_b
-        slopes.append(equiv_slope)
+    for bar, r2 in zip(bars1, r_squared_r_values):
+        height = bar.get_height()
+        ax1.text(bar.get_x() + bar.get_width()/2., height + 0.001,
+                 f'R²={r2:.3f}', ha='center', va='bottom', fontsize=9)
+
+    # Top right: B_PWM slope comparison across labels
+    gamma_values = []
+    r_squared_b_values = []
+    for label in labels:
+        coeffs = model.by_label[label]
+        gamma_values.append(coeffs.gamma)
+        r_squared_b_values.append(coeffs.r_squared_b)
     
-    # 计算R²值
-    r_squareds = []
-    for key in keys:
-        coeffs = model.by_key[key]
-        # 加载该比例的数据计算R²
-        import csv
-        total_pwms_data = []
-        ppfds_data = []
-        
-        with open(model.csv_path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader((line for line in f if line.strip() and not line.lstrip().startswith("#")))
-            for row in reader:
-                row_key = row.get("R:B") or row.get("ratio") or row.get("Key") or row.get("KEY")
-                if row_key == key:
-                    r_pwm = float(row.get("R_PWM", 0))
-                    b_pwm = float(row.get("B_PWM", 0))
-                    ppfd = float(row.get("PPFD", 0))
-                    total_pwms_data.append(r_pwm + b_pwm)
-                    ppfds_data.append(ppfd)
-        
-        if len(total_pwms_data) > 1:
-            w_r, w_b = _weights_from_key(key)
-            y_pred = []
-            for i, total_pwm in enumerate(total_pwms_data):
-                r_pwm = total_pwm * w_r
-                b_pwm = total_pwm * w_b
-                ppfd_pred = coeffs.predict(r_pwm, b_pwm)
-                y_pred.append(ppfd_pred)
-            ss_res = sum((y - y_pred[i])**2 for i, y in enumerate(ppfds_data))
-            ss_tot = sum((y - np.mean(ppfds_data))**2 for y in ppfds_data)
-            r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-        else:
-            r_squared = 0
-        r_squareds.append(r_squared)
-    
-    bars = ax2.bar(keys, slopes, alpha=0.7, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'])
-    ax2.set_xlabel('Ratio')
-    ax2.set_ylabel('Slope (PPFD per Total PWM %)')
-    ax2.set_title('Model Slopes by Ratio')
+    bars2 = ax2.bar(labels, gamma_values, alpha=0.7, color='#4444ff')
+    ax2.set_xlabel('Label')
+    ax2.set_ylabel('B_PWM Slope (γ)')
+    ax2.set_title('Blue Channel Slope Comparison')
     ax2.grid(True, alpha=0.3)
     
-    # 在柱状图上添加R²值
-    for i, (bar, r2) in enumerate(zip(bars, r_squareds)):
+    for bar, r2 in zip(bars2, r_squared_b_values):
         height = bar.get_height()
-        ax2.text(bar.get_x() + bar.get_width()/2., height + 0.05,
-                f'R²={r2:.3f}', ha='center', va='bottom', fontsize=9)
+        ax2.text(bar.get_x() + bar.get_width()/2., height + 0.001,
+                 f'R²={r2:.3f}', ha='center', va='bottom', fontsize=9)
+
+    # Bottom left: PPFD vs predicted Total PWM comparison
+    ppfd_range = np.linspace(0, 500, 100)
+    for label in labels:
+        coeffs = model.by_label[label]
+        r_pwms = [coeffs.predict_r_pwm(p) for p in ppfd_range]
+        b_pwms = [coeffs.predict_b_pwm(p) for p in ppfd_range]
+        total_pwms = [r + b for r, b in zip(r_pwms, b_pwms)]
+        ax3.plot(ppfd_range, total_pwms, 'o-', label=f'Label {label}', linewidth=2, markersize=3)
     
+    ax3.set_xlabel('PPFD (μmol/m²/s)')
+    ax3.set_ylabel('Predicted Total PWM (%)')
+    ax3.set_title('PPFD vs Total PWM Prediction Comparison')
+    ax3.grid(True, alpha=0.3)
+    ax3.legend()
+
+    # Bottom right: R² comparison
+    x_pos = np.arange(len(labels))
+    width = 0.35
+    
+    bars3 = ax4.bar(x_pos - width/2, r_squared_r_values, width, label='R_PWM R²', alpha=0.7, color='#ff4444')
+    bars4 = ax4.bar(x_pos + width/2, r_squared_b_values, width, label='B_PWM R²', alpha=0.7, color='#4444ff')
+    
+    ax4.set_xlabel('Label')
+    ax4.set_ylabel('R² Value')
+    ax4.set_title('Model Fit Quality Comparison')
+    ax4.set_xticks(x_pos)
+    ax4.set_xticklabels(labels)
+    ax4.grid(True, alpha=0.3)
+    ax4.legend()
+
     plt.tight_layout()
-    
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"对比图已保存到: {save_path}")
-    
+        print(f"Comparison chart saved to: {save_path}")
     plt.show()
 
 
-def export_ppfd_pwm_table(model: PWMtoPPFDModel, ratio_key: str = "5:1"):
+def export_ppfd_pwm_table(model: PWMtoPPFDModel, label: str = "5:1"):
     """导出PPFD到PWM的对应表"""
     print("=" * 60)
-    print(f"导出 {ratio_key} 比例的PPFD-PWM对应表")
+    print(f"导出 {label} 标签的PPFD-PWM对应表")
     print("=" * 60)
     
     # 生成0-600 PPFD的对应PWM值
@@ -294,28 +275,28 @@ def export_ppfd_pwm_table(model: PWMtoPPFDModel, ratio_key: str = "5:1"):
             r_pwm, b_pwm, total_pwm = solve_pwm_for_target_ppfd(
                 model=model,
                 target_ppfd=ppfd,
-                key=ratio_key,
-                integer_output=True
+                label=label,
+                integer_output=False
             )
             results.append({
                 'PPFD': ppfd,
-                'R_PWM': r_pwm,
-                'B_PWM': b_pwm,
-                'Total_PWM': total_pwm
+                'R_PWM': round(r_pwm, 2),
+                'B_PWM': round(b_pwm, 2),
+                'Total_PWM': round(total_pwm, 2)
             })
         except Exception as e:
             print(f"PPFD={ppfd} 求解失败: {e}")
             results.append({
                 'PPFD': ppfd,
-                'R_PWM': 0,
-                'B_PWM': 0,
-                'Total_PWM': 0
+                'R_PWM': 0.0,
+                'B_PWM': 0.0,
+                'Total_PWM': 0.0
             })
     
     # 保存到CSV文件
     import csv
     result_dir = Path(__file__).parent / "result"
-    csv_path = result_dir / f"ppfd_pwm_table_{ratio_key.replace(':', '_')}.csv"
+    csv_path = result_dir / f"ppfd_pwm_table_{label.replace(':', '_')}.csv"
     
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=['PPFD', 'R_PWM', 'B_PWM', 'Total_PWM'])
@@ -328,18 +309,18 @@ def export_ppfd_pwm_table(model: PWMtoPPFDModel, ratio_key: str = "5:1"):
     # 显示前10个和后10个数据点
     print("\n前10个数据点:")
     for i, row in enumerate(results[:10]):
-        print(f"  PPFD={row['PPFD']:3d} → R_PWM={row['R_PWM']:3d}%, B_PWM={row['B_PWM']:3d}%, Total={row['Total_PWM']:3d}%")
+        print(f"  PPFD={row['PPFD']:3d} → R_PWM={row['R_PWM']:5.1f}%, B_PWM={row['B_PWM']:5.1f}%, Total={row['Total_PWM']:5.1f}%")
     
     print("\n后10个数据点:")
     for i, row in enumerate(results[-10:]):
-        print(f"  PPFD={row['PPFD']:3d} → R_PWM={row['R_PWM']:3d}%, B_PWM={row['B_PWM']:3d}%, Total={row['Total_PWM']:3d}%")
+        print(f"  PPFD={row['PPFD']:3d} → R_PWM={row['R_PWM']:5.1f}%, B_PWM={row['B_PWM']:5.1f}%, Total={row['Total_PWM']:5.1f}%")
     
     return csv_path
 
 
 def demo_models():
-    """演示线性模型"""
-    print("LED控制系统 - PWM-PPFD转换系统演示")
+    """演示分开拟合的线性模型"""
+    print("LED控制系统 - PWM-PPFD转换系统演示（重构版本）")
     print("=" * 80)
     
     # 检查标定数据文件
@@ -360,7 +341,13 @@ def demo_models():
         
         # 4. 导出PPFD-PWM对应表
         result_dir = Path(__file__).parent / "result"
-        export_ppfd_pwm_table(model, "5:1")
+        labels = model.list_labels()
+        if labels:
+            # 为第一个标签生成表格
+            export_ppfd_pwm_table(model, labels[0])
+            # 如果"5:1"标签存在，也为它生成表格
+            if "5:1" in labels:
+                export_ppfd_pwm_table(model, "5:1")
         
         # 5. 绘制拟合质量图
         plot_model_fitting(model, str(result_dir / "ppfd_model_fitting.png"))
@@ -371,9 +358,12 @@ def demo_models():
         print("=" * 80)
         print("演示完成！")
         print("生成的文件:")
-        print("- result/ppfd_pwm_table_5_1.csv: PPFD-PWM对应表")
+        if labels:
+            print(f"- result/ppfd_pwm_table_{labels[0].replace(':', '_')}.csv: PPFD-PWM对应表")
+            if "5:1" in labels:
+                print("- result/ppfd_pwm_table_5_1.csv: PPFD-PWM对应表")
         print("- result/ppfd_model_fitting.png: 模型拟合质量")
-        print("- result/ppfd_comparison.png: 不同比例对比")
+        print("- result/ppfd_comparison.png: 不同标签对比")
         
     except Exception as e:
         print(f"演示过程中出现错误: {e}")

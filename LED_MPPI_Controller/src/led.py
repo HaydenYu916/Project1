@@ -236,7 +236,7 @@ LedParams = LedThermalParams
 
 
 # =============================================================================
-# 模块 4: PWM-PPFD 转换系统
+# 模块 4: PWM-PPFD 转换系统（重构版本）
 # =============================================================================
 _DEFAULT_DIR = os.path.dirname(__file__)
 DEFAULT_CALIB_CSV = os.path.join(_DEFAULT_DIR, "..", "data", "calib_data.csv")
@@ -244,28 +244,46 @@ DEFAULT_CALIB_CSV = os.path.join(_DEFAULT_DIR, "..", "data", "calib_data.csv")
 
 @dataclass(frozen=True)
 class PpfdModelCoeffs:
-    """PPFD线性模型：ppfd ≈ a_r * R_PWM + a_b * B_PWM + intercept"""
+    """PPFD线性模型系数：R_PWM = α * PPFD + β, B_PWM = γ * PPFD + δ"""
 
-    a_r: float
-    a_b: float
-    intercept: float = 0.0
+    alpha: float  # R_PWM = alpha * PPFD + beta
+    beta: float
+    gamma: float  # B_PWM = gamma * PPFD + delta  
+    delta: float
+    r_squared_r: float = 0.0  # R_PWM模型的R²
+    r_squared_b: float = 0.0  # B_PWM模型的R²
 
-    def predict(self, r_pwm: float, b_pwm: float) -> float:
-        return float(self.a_r * float(r_pwm) + self.a_b * float(b_pwm) + self.intercept)
+    def predict_r_pwm(self, ppfd: float) -> float:
+        """预测R_PWM值"""
+        return float(self.alpha * float(ppfd) + self.beta)
+
+    def predict_b_pwm(self, ppfd: float) -> float:
+        """预测B_PWM值"""
+        return float(self.gamma * float(ppfd) + self.delta)
+
+    def predict_pwm(self, ppfd: float) -> Tuple[float, float]:
+        """同时预测R_PWM和B_PWM值"""
+        return self.predict_r_pwm(ppfd), self.predict_b_pwm(ppfd)
 
 
 def _normalize_key(key: str) -> str:
+    """标准化标签键"""
     s = str(key).strip().lower()
+    # 处理r1, r2等格式
     m = re.fullmatch(r"r\s*(\d+)", s)
     if m:
-        return f"r:{m.group(1)}"
+        return f"r{m.group(1)}"
+    # 处理其他格式，移除空格
     s = re.sub(r"\s+", "", s)
     return s
 
 
-def _load_calib_rows(csv_path: str) -> Tuple[Dict[str, list[Tuple[float, float, float]]], list[Tuple[float, float, float]]]:
-    by_key: Dict[str, list[Tuple[float, float, float]]] = {}
-    all_rows: list[Tuple[float, float, float]] = []
+def _load_calib_data(csv_path: str) -> Dict[str, List[Tuple[float, float, float]]]:
+    """加载标定数据并按Label分组
+    
+    返回格式：{label: [(ppfd, r_pwm, b_pwm), ...]}
+    """
+    by_label: Dict[str, List[Tuple[float, float, float]]] = {}
 
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(
@@ -273,6 +291,7 @@ def _load_calib_rows(csv_path: str) -> Tuple[Dict[str, list[Tuple[float, float, 
         )
 
         def _get(row: dict, *names: str) -> Optional[str]:
+            """从行数据中获取指定字段的值"""
             for name in names:
                 if name in row:
                     return row[name]
@@ -283,12 +302,13 @@ def _load_calib_rows(csv_path: str) -> Tuple[Dict[str, list[Tuple[float, float, 
             return None
 
         for row in reader:
-            key = _get(row, "KEY", "Key", "R:B", "ratio")
+            # 提取必要字段
+            label = _get(row, "Label", "LABEL", "KEY", "Key", "R:B", "ratio")
             ppfd_s = _get(row, "PPFD", "ppfd")
             r_pwm_s = _get(row, "R_PWM", "r_pwm", "Red_PWM", "R PWM")
             b_pwm_s = _get(row, "B_PWM", "b_pwm", "Blue_PWM", "B PWM")
 
-            if key is None or ppfd_s is None or r_pwm_s is None or b_pwm_s is None:
+            if label is None or ppfd_s is None or r_pwm_s is None or b_pwm_s is None:
                 continue
 
             try:
@@ -298,141 +318,207 @@ def _load_calib_rows(csv_path: str) -> Tuple[Dict[str, list[Tuple[float, float, 
             except (TypeError, ValueError):
                 continue
 
-            triple = (r_pwm, b_pwm, ppfd)
-            by_key.setdefault(_normalize_key(key), []).append(triple)
-            all_rows.append(triple)
+            # 标准化标签并存储数据
+            label_norm = _normalize_key(label)
+            by_label.setdefault(label_norm, []).append((ppfd, r_pwm, b_pwm))
 
-    return by_key, all_rows
+    return by_label
 
 
-def _fit_linear(rows: Iterable[Tuple[float, float, float]]) -> PpfdModelCoeffs:
-    """拟合双变量线性模型：PPFD = a_r * R_PWM + a_b * B_PWM + intercept"""
-    s_rr = s_bb = s_rb = s_r1 = s_b1 = s_11 = 0.0
-    s_ry = s_by = s_1y = 0.0
-    n = 0
-    for r_pwm, b_pwm, y in rows:
-        r = float(r_pwm)
-        b = float(b_pwm)
-        y = float(y)
-        s_rr += r * r
-        s_bb += b * b
-        s_rb += r * b
-        s_r1 += r
-        s_b1 += b
-        s_11 += 1.0
-        s_ry += r * y
-        s_by += b * y
-        s_1y += y
-        n += 1
+def _fit_separate_models(data_points: List[Tuple[float, float, float]]) -> PpfdModelCoeffs:
+    """分开拟合：R_PWM = α * PPFD + β, B_PWM = γ * PPFD + δ
+    
+    参数:
+        data_points: [(ppfd, r_pwm, b_pwm), ...] 格式的数据点列表
+    
+    返回:
+        PpfdModelCoeffs: 包含四个系数和R²值的模型系数
+    """
+    if len(data_points) < 2:
+        raise ValueError("需要至少2个数据点进行拟合")
+    
+    # 提取数据
+    ppfd_vals = [float(point[0]) for point in data_points]
+    r_pwm_vals = [float(point[1]) for point in data_points]
+    b_pwm_vals = [float(point[2]) for point in data_points]
+    
+    # 拟合R_PWM对PPFD的线性模型: R_PWM = alpha * PPFD + beta
+    alpha, beta, r_squared_r = _fit_linear_regression(ppfd_vals, r_pwm_vals)
+    
+    # 拟合B_PWM对PPFD的线性模型: B_PWM = gamma * PPFD + delta  
+    gamma, delta, r_squared_b = _fit_linear_regression(ppfd_vals, b_pwm_vals)
+    
+    return PpfdModelCoeffs(
+        alpha=alpha,
+        beta=beta, 
+        gamma=gamma,
+        delta=delta,
+        r_squared_r=r_squared_r,
+        r_squared_b=r_squared_b
+    )
 
-    if n == 0:
-        raise ValueError("没有可用于拟合的数据行")
 
-    def det3(a,b,c,d,e,f,g,h,i):
-        return a*(e*i - f*h) - b*(d*i - f*g) + c*(d*h - e*g)
-
-    A11, A12, A13 = s_rr, s_rb, s_r1
-    A21, A22, A23 = s_rb, s_bb, s_b1
-    A31, A32, A33 = s_r1, s_b1, s_11
-    B1, B2, B3 = s_ry, s_by, s_1y
-
-    D = det3(A11,A12,A13, A21,A22,A23, A31,A32,A33)
-    if abs(D) < 1e-10:
-        # 退化为单变量模型
-        if s_rr >= s_bb and s_rr > 0:
-            a_r = s_ry / s_rr
-            return PpfdModelCoeffs(a_r=float(a_r), a_b=0.0, intercept=0.0)
-        elif s_bb > 0:
-            a_b = s_by / s_bb
-            return PpfdModelCoeffs(a_r=0.0, a_b=float(a_b), intercept=0.0)
-        else:
-            return PpfdModelCoeffs(0.0, 0.0, 0.0)
-
-    D_r = det3(B1,A12,A13, B2,A22,A23, B3,A32,A33)
-    D_b = det3(A11,B1,A13, A21,B2,A23, A31,B3,A33)
-    D_c = det3(A11,A12,B1, A21,A22,B2, A31,A32,B3)
-    a_r = D_r / D
-    a_b = D_b / D
-    c = D_c / D
-    return PpfdModelCoeffs(a_r=float(a_r), a_b=float(a_b), intercept=float(c))
+def _fit_linear_regression(x_vals: List[float], y_vals: List[float]) -> Tuple[float, float, float]:
+    """使用最小二乘法拟合一元线性回归模型: y = slope * x + intercept
+    
+    参数:
+        x_vals: 自变量值列表
+        y_vals: 因变量值列表
+    
+    返回:
+        (slope, intercept, r_squared): 斜率、截距和决定系数
+    """
+    if len(x_vals) != len(y_vals):
+        raise ValueError("x_vals和y_vals长度必须相同")
+    
+    n = len(x_vals)
+    if n < 2:
+        return 0.0, 0.0, 0.0
+    
+    # 转换为numpy数组进行计算
+    x = np.array(x_vals, dtype=float)
+    y = np.array(y_vals, dtype=float)
+    
+    # 计算均值
+    x_mean = np.mean(x)
+    y_mean = np.mean(y)
+    
+    # 计算斜率和截距
+    numerator = np.sum((x - x_mean) * (y - y_mean))
+    denominator = np.sum((x - x_mean) ** 2)
+    
+    if abs(denominator) < 1e-12:
+        slope = 0.0
+        intercept = y_mean
+    else:
+        slope = numerator / denominator
+        intercept = y_mean - slope * x_mean
+    
+    # 计算R²
+    y_pred = slope * x + intercept
+    ss_res = np.sum((y - y_pred) ** 2)  # 残差平方和
+    ss_tot = np.sum((y - y_mean) ** 2)  # 总平方和
+    
+    if abs(ss_tot) < 1e-12:
+        r_squared = 0.0
+    else:
+        r_squared = 1.0 - (ss_res / ss_tot)
+    
+    return float(slope), float(intercept), float(r_squared)
 
 
 class PWMtoPPFDModel:
-    """基于 CSV 标定数据的 PWM→PPFD 线性模型集合：PPFD = a_r * R_PWM + a_b * B_PWM + intercept"""
+    """基于分开拟合的PWM→PPFD模型集合
+    
+    对每个Label分别拟合：
+    - R_PWM = α * PPFD + β
+    - B_PWM = γ * PPFD + δ
+    
+    然后可以通过PPFD值预测所需的PWM设定
+    """
 
     def __init__(
         self,
-        exclude_keys: Optional[Iterable[str]] = None,
+        exclude_labels: Optional[Iterable[str]] = None,
     ):
-        self.exclude_keys: set[str] = set(_normalize_key(k) for k in (exclude_keys or []))
-        self.by_key: Dict[str, PpfdModelCoeffs] = {}
-        self.overall: Optional[PpfdModelCoeffs] = None
+        self.exclude_labels: set[str] = set(_normalize_key(k) for k in (exclude_labels or []))
+        self.by_label: Dict[str, PpfdModelCoeffs] = {}
         self.csv_path: Optional[str] = None
 
     def fit(self, csv_path: str) -> "PWMtoPPFDModel":
+        """从CSV文件拟合模型
+        
+        参数:
+            csv_path: 标定数据CSV文件路径
+        
+        返回:
+            self: 支持链式调用
+        """
         self.csv_path = csv_path
-        by_key_rows, _all_rows = _load_calib_rows(self.csv_path)
+        by_label_data = _load_calib_data(self.csv_path)
 
-        if self.exclude_keys:
-            by_key_rows = {
-                k: v for k, v in by_key_rows.items() if _normalize_key(k) not in self.exclude_keys
+        # 排除指定的标签
+        if self.exclude_labels:
+            by_label_data = {
+                k: v for k, v in by_label_data.items() 
+                if _normalize_key(k) not in self.exclude_labels
             }
 
-        all_rows = [t for rows in by_key_rows.values() for t in rows]
-
-        for key, rows in by_key_rows.items():
+        # 对每个标签分别拟合模型
+        for label, data_points in by_label_data.items():
             try:
-                coeffs = _fit_linear(rows)
-                self.by_key[key] = coeffs
-            except ValueError:
+                coeffs = _fit_separate_models(data_points)
+                self.by_label[label] = coeffs
+            except ValueError as e:
+                print(f"警告：标签 '{label}' 拟合失败: {e}")
                 continue
 
-        if all_rows:
-            self.overall = _fit_linear(all_rows)
-        else:
-            self.overall = PpfdModelCoeffs(0.0, 0.0, 0.0)
+        if not self.by_label:
+            raise ValueError("没有成功拟合任何模型")
+
         return self
 
-    def predict(self, *, r_pwm: float, b_pwm: float, key: Optional[str] = None) -> float:
-        key_norm = _normalize_key(key) if key else None
-        coeffs = self.by_key.get(key_norm) if key_norm else self.overall
-        coeffs = coeffs or self.overall
+    def predict_pwm(self, *, ppfd: float, label: str) -> Tuple[float, float]:
+        """根据PPFD值预测所需的PWM设定
+        
+        参数:
+            ppfd: 目标PPFD值
+            label: 标签（如"5:1", "r1"等）
+        
+        返回:
+            (r_pwm, b_pwm): 预测的红光和蓝光PWM值
+        """
+        label_norm = _normalize_key(label)
+        coeffs = self.by_label.get(label_norm)
         if coeffs is None:
-            raise RuntimeError("Model not fitted.")
-        return coeffs.predict(r_pwm, b_pwm)
+            raise KeyError(f"标签 '{label}' 的模型未找到")
+        
+        return coeffs.predict_pwm(ppfd)
+
+    def get_model_info(self, label: str) -> Dict[str, float]:
+        """获取指定标签的模型信息
+        
+        参数:
+            label: 标签
+        
+        返回:
+            包含模型系数和R²值的字典
+        """
+        label_norm = _normalize_key(label)
+        coeffs = self.by_label.get(label_norm)
+        if coeffs is None:
+            raise KeyError(f"标签 '{label}' 的模型未找到")
+        
+        return {
+            'alpha': coeffs.alpha,
+            'beta': coeffs.beta,
+            'gamma': coeffs.gamma,
+            'delta': coeffs.delta,
+            'r_squared_r': coeffs.r_squared_r,
+            'r_squared_b': coeffs.r_squared_b
+        }
+
+    def list_labels(self) -> List[str]:
+        """列出所有可用的标签"""
+        return list(self.by_label.keys())
+
+    def get_fit_summary(self) -> Dict[str, Dict[str, float]]:
+        """获取所有模型的拟合摘要"""
+        summary = {}
+        for label, coeffs in self.by_label.items():
+            summary[label] = {
+                'alpha': coeffs.alpha,
+                'beta': coeffs.beta, 
+                'gamma': coeffs.gamma,
+                'delta': coeffs.delta,
+                'r_squared_r': coeffs.r_squared_r,
+                'r_squared_b': coeffs.r_squared_b
+            }
+        return summary
 
 
 
 
-def _weights_from_key(key: str) -> Tuple[float, float]:
-    """根据CSV数据中的实际红蓝PWM比例计算权重"""
-    k = _normalize_key(key)
-    if k == "r:1":
-        return 1.0, 0.0
-    
-    # 基于CSV数据中的实际比例计算权重
-    # 这里使用CSV数据中5:1比例的平均红蓝比例
-    if k == "5:1":
-        # CSV数据中5:1比例的平均红蓝比例约为3:1
-        return 0.75, 0.25
-    elif k == "3:1":
-        # CSV数据中3:1比例的平均红蓝比例约为2:1
-        return 0.67, 0.33
-    elif k == "1:1":
-        # CSV数据中1:1比例的平均红蓝比例约为1:2
-        return 0.33, 0.67
-    elif k == "7:1":
-        # CSV数据中7:1比例的平均红蓝比例约为4:1
-        return 0.80, 0.20
-    
-    # 默认情况：尝试解析比例
-    m = re.fullmatch(r"(\d+)\s*:\s*(\d+)", k)
-    if m:
-        r = float(m.group(1))
-        b = float(m.group(2))
-        s = r + b if (r + b) > 0 else 1.0
-        return r / s, b / s
-    return 0.5, 0.5
 
 
 
@@ -441,7 +527,7 @@ def solve_pwm_for_target_ppfd(
     *,
     model: PWMtoPPFDModel,
     target_ppfd: float,
-    key: str,
+    label: str,
     pwm_clip: Tuple[float, float] = (0.0, 100.0),
     integer_output: bool = True,
 ) -> Tuple[int | float, int | float, int | float]:
@@ -450,60 +536,39 @@ def solve_pwm_for_target_ppfd(
     参数:
         model: PWM到PPFD的线性模型
         target_ppfd: 目标PPFD值
-        key: 红蓝比例键（如"5:1"）
+        label: 标签（如"5:1", "r1"等）
         pwm_clip: PWM范围限制
         integer_output: 是否输出整数PWM值
     
     返回:
         (r_pwm, b_pwm, total_pwm)
     """
-    coeffs = model.by_key.get(_normalize_key(key), model.overall)
-    if coeffs is None:
-        raise RuntimeError("Model has no coefficients.")
-
-    # 使用标签权重
-    w_r, w_b = _weights_from_key(key)
-
-    # 求解：target_ppfd = a_r * r_pwm + a_b * b_pwm + intercept
-    # 其中 r_pwm = w_r * total_pwm, b_pwm = w_b * total_pwm
-    denom = coeffs.a_r * w_r + coeffs.a_b * w_b
-    if abs(denom) < 1e-9:
-        if w_r > w_b and abs(coeffs.a_r) > 1e-9:
-            denom = coeffs.a_r * w_r
-            w_b = 0.0
-        elif abs(coeffs.a_b) > 1e-9:
-            denom = coeffs.a_b * w_b
-            w_r = 0.0
-        else:
-            return 0.0, 0.0, 0.0
-
-    # 求解标量 s，使 r = s*w_r, b = s*w_b
-    s = (float(target_ppfd) - coeffs.intercept) / denom
-
+    # 直接使用新的预测方法
+    r_pwm_f, b_pwm_f = model.predict_pwm(ppfd=target_ppfd, label=label)
+    total_pwm_f = r_pwm_f + b_pwm_f
+    
+    # 应用PWM范围限制
     def _clip(x: float, lo: float, hi: float) -> float:
         return max(lo, min(x, hi))
-
-    # 约束：每个通道的 PWM 分别在 [0,100]
-    s_max = float('inf')
-    if w_r > 0:
-        s_max = min(s_max, 100.0 / w_r)
-    if w_b > 0:
-        s_max = min(s_max, 100.0 / w_b)
-    s = _clip(s, pwm_clip[0], s_max)
-
-    r_pwm_f = s * w_r
-    b_pwm_f = s * w_b
-
+    
+    r_pwm_clipped = _clip(r_pwm_f, pwm_clip[0], pwm_clip[1])
+    b_pwm_clipped = _clip(b_pwm_f, pwm_clip[0], pwm_clip[1])
+    total_pwm_clipped = r_pwm_clipped + b_pwm_clipped
+    
     if not integer_output:
-        return float(r_pwm_f), float(b_pwm_f), float(s)
-
+        return float(r_pwm_clipped), float(b_pwm_clipped), float(total_pwm_clipped)
+    
     # 整数量化
-    r_i = int(round(r_pwm_f))
-    b_i = int(round(b_pwm_f))
-    r_i = max(0, min(100, r_i))
-    b_i = max(0, min(100, b_i))
-    total_i = int(round(s))
-    return r_i, b_i, total_i
+    r_pwm_int = int(round(r_pwm_clipped))
+    b_pwm_int = int(round(b_pwm_clipped))
+    total_pwm_int = r_pwm_int + b_pwm_int
+    
+    # 确保整数结果也在范围内
+    r_pwm_int = max(0, min(100, r_pwm_int))
+    b_pwm_int = max(0, min(100, b_pwm_int))
+    total_pwm_int = r_pwm_int + b_pwm_int
+    
+    return r_pwm_int, b_pwm_int, total_pwm_int
 
 
 # =============================================================================
@@ -522,7 +587,15 @@ class PowerInterpolator:
 
     @staticmethod
     def _normalize_key(key: str) -> str:
-        return str(key).strip().lower().replace(" ", "")
+        """标准化标签键 - 与模块4保持一致"""
+        s = str(key).strip().lower()
+        # 处理r1, r2等格式
+        m = re.fullmatch(r"r\s*(\d+)", s)
+        if m:
+            return f"r{m.group(1)}"
+        # 处理其他格式，移除空格
+        s = re.sub(r"\s+", "", s)
+        return s
 
     @classmethod
     def from_csv(cls, csv_path: str) -> "PowerInterpolator":
@@ -530,12 +603,24 @@ class PowerInterpolator:
         by_key_pairs: Dict[str, list[Tuple[float, float]]] = {}
         with open(csv_path, newline="", encoding="utf-8") as f:
             reader = csv.DictReader((line for line in f if line.strip() and not line.lstrip().startswith("#")))
+            
+            def _get(row: dict, *names: str) -> Optional[str]:
+                """从行数据中获取指定字段的值 - 与模块4保持一致"""
+                for name in names:
+                    if name in row:
+                        return row[name]
+                for name in names:
+                    for k, v in row.items():
+                        if k.replace(" ", "").lower() == name.replace(" ", "").lower():
+                            return v
+                return None
+            
             for row in reader:
-                key = row.get("R:B") or row.get("ratio") or row.get("Key") or row.get("KEY")
-                r_pwm = row.get("R_PWM") or row.get("r_pwm") or row.get("R PWM")
-                b_pwm = row.get("B_PWM") or row.get("b_pwm") or row.get("B PWM")
-                r_pow = row.get("R_POWER") or row.get("r_power")
-                b_pow = row.get("B_POWER") or row.get("b_power")
+                key = _get(row, "Label", "LABEL", "KEY", "Key", "R:B", "ratio")
+                r_pwm = _get(row, "R_PWM", "r_pwm", "Red_PWM", "R PWM")
+                b_pwm = _get(row, "B_PWM", "b_pwm", "Blue_PWM", "B PWM")
+                r_pow = _get(row, "R_POWER", "r_power")
+                b_pow = _get(row, "B_POWER", "b_power")
                 if key is None or r_pwm is None or b_pwm is None or r_pow is None or b_pow is None:
                     continue
                 try:
@@ -607,15 +692,28 @@ class PowerLine:
 
 
 def _load_power_rows(csv_path: str) -> Dict[str, list[Tuple[float, float]]]:
+    """加载功率数据并按标签分组 - 与模块4保持一致"""
     rows_by_key: Dict[str, list[Tuple[float, float]]] = {}
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader((line for line in f if line.strip() and not line.lstrip().startswith("#")))
+        
+        def _get(row: dict, *names: str) -> Optional[str]:
+            """从行数据中获取指定字段的值 - 与模块4保持一致"""
+            for name in names:
+                if name in row:
+                    return row[name]
+            for name in names:
+                for k, v in row.items():
+                    if k.replace(" ", "").lower() == name.replace(" ", "").lower():
+                        return v
+            return None
+        
         for row in reader:
-            key = row.get("R:B") or row.get("ratio") or row.get("Key") or row.get("KEY")
-            r_pwm = row.get("R_PWM") or row.get("r_pwm") or row.get("R PWM")
-            b_pwm = row.get("B_PWM") or row.get("b_pwm") or row.get("B PWM")
-            r_pow = row.get("R_POWER") or row.get("r_power")
-            b_pow = row.get("B_POWER") or row.get("b_power")
+            key = _get(row, "Label", "LABEL", "KEY", "Key", "R:B", "ratio")
+            r_pwm = _get(row, "R_PWM", "r_pwm", "Red_PWM", "R PWM")
+            b_pwm = _get(row, "B_PWM", "b_pwm", "Blue_PWM", "B PWM")
+            r_pow = _get(row, "R_POWER", "r_power")
+            b_pow = _get(row, "B_POWER", "b_power")
             if key is None or r_pwm is None or b_pwm is None or r_pow is None or b_pow is None:
                 continue
             try:
@@ -868,7 +966,7 @@ __all__ = [
     "DEFAULT_MAX_POWER",
     "DEFAULT_LED_EFFICIENCY",
     "DEFAULT_EFFICIENCY_DECAY",
-    # PWM/PPFD exports
+    # PWM/PPFD exports (重构版本)
     "DEFAULT_CALIB_CSV",
     "PpfdModelCoeffs",
     "PWMtoPPFDModel",
