@@ -12,6 +12,7 @@ import json
 import csv
 from datetime import datetime
 import numpy as np
+import pandas as pd
 
 # ==================== 配置宏定义 ====================
 # 温度传感器设备ID配置（修改此处即可切换设备）
@@ -35,6 +36,9 @@ project_root = os.path.join(current_dir, '..', '..')
 src_dir = os.path.join(project_root, 'src')
 riotee_sensor_dir = os.path.join(project_root, '..', 'Sensor', 'riotee_sensor')
 controller_dir = os.path.join(project_root, '..', 'Shelly', 'src')
+
+# CO2数据文件路径
+CO2_FILE = "/data/csv/co2_sensor.csv"
 
 # 确保项目目录在路径中
 sys.path.insert(0, src_dir)
@@ -74,6 +78,11 @@ class MPPIControlLoop:
         # 使用宏定义配置
         self.temperature_device_id = TEMPERATURE_DEVICE_ID
         self.log_file = LOG_FILE
+        
+        # 初始化上一次的控制结果
+        self.last_r_pwm = 0.0
+        self.last_b_pwm = 0.0
+        self.last_cost = None
         
         # 初始化LED植物模型
         self.plant = LEDPlant(
@@ -119,17 +128,18 @@ class MPPIControlLoop:
             if not os.path.exists(self.log_file):
                 with open(self.log_file, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
-                    writer.writerow(['时间戳', '输入温度', '红光PWM', '蓝光PWM', '成功状态', '成本', '备注'])
+                    writer.writerow(['时间戳', '输入温度', 'CO2值', '红光PWM', '蓝光PWM', '成功状态', '成本', '备注'])
         except Exception as e:
             print(f"⚠️  日志文件初始化失败: {e}")
     
-    def log_control_cycle(self, timestamp, input_temp, output_r_pwm, output_b_pwm, success, cost=None, note=""):
+    def log_control_cycle(self, timestamp, input_temp, co2_value, output_r_pwm, output_b_pwm, success, cost=None, note=""):
         """记录控制循环日志"""
         try:
             cost_str = f"{cost:.2f}" if cost is not None else "N/A"
+            co2_str = f"{co2_value:.1f}" if co2_value is not None else "N/A"
             with open(self.log_file, 'a', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow([timestamp, f"{input_temp:.2f}", f"{output_r_pwm:.2f}", f"{output_b_pwm:.2f}", success, cost_str, note])
+                writer.writerow([timestamp, f"{input_temp:.2f}", co2_str, f"{output_r_pwm:.2f}", f"{output_b_pwm:.2f}", success, cost_str, note])
         except Exception as e:
             print(f"⚠️  日志记录失败: {e}")
     
@@ -173,15 +183,58 @@ class MPPIControlLoop:
                 return temp, True
             else:
                 if self.temperature_device_id:
-                    print(f"⚠️  指定设备 {self.temperature_device_id} 无有效温度数据，使用模拟温度 24.5°C")
+                    print(f"⚠️  指定设备 {self.temperature_device_id} 无有效温度数据")
                 else:
-                    print("⚠️  无有效温度数据，使用模拟温度 24.5°C")
-                return 24.5, True  # 使用模拟温度
+                    print("⚠️  无有效温度数据")
+                return None, False
                 
         except Exception as e:
             print(f"❌ 温度读取错误: {e}")
-            print("⚠️  使用模拟温度 24.5°C")
-            return 24.5, True  # 使用模拟温度
+            return None, False
+    
+    def read_co2(self):
+        """读取当前CO2数据"""
+        try:
+            if not os.path.exists(CO2_FILE):
+                print("⚠️  CO2文件不存在，使用模拟CO2值 420 ppm")
+                return 420.0, True
+            
+            # 读取CO2数据文件
+            df = pd.read_csv(CO2_FILE, header=None, names=['timestamp', 'co2'])
+            
+            if df.empty:
+                print("⚠️  CO2文件为空，使用模拟CO2值 420 ppm")
+                return 420.0, True
+            
+            # 获取最新的有效CO2值
+            latest_row = df.iloc[-1]
+            latest_timestamp = latest_row['timestamp']
+            latest_co2 = latest_row['co2']
+            
+            # 检查CO2值是否有效
+            if pd.isna(latest_co2) or latest_co2 is None:
+                print("⚠️  最新CO2值无效，使用模拟CO2值 420 ppm")
+                return 420.0, True
+            
+            # 计算数据年龄（秒）
+            current_time = time.time()
+            age_seconds = current_time - latest_timestamp
+            
+            # 数据新鲜度检查
+            if age_seconds < 120:  # 2分钟内
+                status = "🟢"
+            elif age_seconds < 300:  # 2-5分钟
+                status = "🟡"
+            else:  # 超过5分钟
+                status = "🔴"
+            
+            print(f"🌬️  {status} CO2读取: {latest_co2:.1f} ppm ({age_seconds:.0f}秒前)")
+            return latest_co2, True
+            
+        except Exception as e:
+            print(f"❌ CO2读取错误: {e}")
+            print("⚠️  使用模拟CO2值 420 ppm")
+            return 420.0, True
     
     def run_mppi_control(self, current_temp):
         """运行MPPI控制算法"""
@@ -274,35 +327,73 @@ class MPPIControlLoop:
         print(f"🔄 控制循环开始 - {timestamp}")
         print(f"{'='*60}")
         
-        # 1. 读取温度
+        # 1. 读取温度（失败则重试5次，每次间隔1分钟；最终失败则跳过本次发送）
         current_temp, temp_ok = self.read_temperature()
+        retry_count = 0
+        while not temp_ok and retry_count < 5:
+            retry_count += 1
+            print(f"⏳ 温度读取失败，{retry_count}/5 次重试，1分钟后重试...")
+            time.sleep(60)
+            current_temp, temp_ok = self.read_temperature()
+
         if not temp_ok:
-            print("❌ 温度读取失败，跳过本次控制循环")
-            self.log_control_cycle(timestamp, 0.0, 0.0, 0.0, False)
+            print("❌ 温度读取连续失败(5次)，维持上次PWM，跳过本次控制发送")
+            # 读取CO2用于日志记录（允许使用模拟CO2）
+            current_co2, _ = self.read_co2()
+            r_pwm = self.last_r_pwm
+            b_pwm = self.last_b_pwm
+            cost = self.last_cost
+            note = "温度读取失败，已重试5次，维持上次PWM并跳过发送"
+            # 记录失败日志并结束本次循环（不发送命令）
+            self.log_control_cycle(timestamp, current_temp if current_temp is not None else float('nan'), current_co2, r_pwm, b_pwm, False, cost, note)
             return False
+        else:
+            # 2. 读取CO2
+            current_co2, co2_ok = self.read_co2()
+            if not co2_ok:
+                print("❌ CO2读取失败，使用上一次PWM控制结果")
+                # 使用上一次的控制结果
+                r_pwm = self.last_r_pwm
+                b_pwm = self.last_b_pwm
+                cost = self.last_cost
+                current_co2 = 420.0  # 使用默认CO2值
+                note = "CO2读取失败，使用上次PWM"
+            else:
+                # 3. 运行MPPI控制
+                r_pwm, b_pwm, control_ok, cost = self.run_mppi_control(current_temp)
+                if not control_ok:
+                    print("❌ MPPI控制失败，使用上一次PWM控制结果")
+                    # 使用上一次的控制结果
+                    r_pwm = self.last_r_pwm
+                    b_pwm = self.last_b_pwm
+                    cost = self.last_cost
+                    note = "MPPI控制失败，使用上次PWM"
+                else:
+                    # 更新上一次的控制结果
+                    self.last_r_pwm = r_pwm
+                    self.last_b_pwm = b_pwm
+                    self.last_cost = cost
+                    note = ""
         
-        # 2. 运行MPPI控制
-        r_pwm, b_pwm, control_ok, cost = self.run_mppi_control(current_temp)
-        if not control_ok:
-            print("❌ MPPI控制失败，跳过本次控制循环")
-            self.log_control_cycle(timestamp, current_temp, 0.0, 0.0, False)
-            return False
-        
-        # 3. 发送PWM命令
+        # 4. 发送PWM命令
         commands, send_ok = self.send_pwm_commands(r_pwm, b_pwm)
         if not send_ok:
             print("❌ 命令发送失败")
-            self.log_control_cycle(timestamp, current_temp, r_pwm, b_pwm, False, cost)
+            self.log_control_cycle(timestamp, current_temp, current_co2, r_pwm, b_pwm, False, cost, note)
             return False
         
-        # 4. 记录成功日志
-        note = ""
+        # 5. 记录成功日志
         if 'solar_vol' in str(DEFAULT_MODEL_NAME).lower():
             if getattr(self, 'last_a1_avg', None) is not None:
-                note = f"A1_Raw_10min_avg={self.last_a1_avg:.2f}"
+                a1_note = f"A1_Raw_10min_avg={self.last_a1_avg:.2f}"
             else:
-                note = "A1_Raw_10min_avg=N/A"
-        self.log_control_cycle(timestamp, current_temp, r_pwm, b_pwm, True, cost, note)
+                a1_note = "A1_Raw_10min_avg=N/A"
+            if note:
+                note = f"{note}; {a1_note}"
+            else:
+                note = a1_note
+        
+        self.log_control_cycle(timestamp, current_temp, current_co2, r_pwm, b_pwm, True, cost, note)
         print(f"✅ 控制循环完成")
         return True
     
