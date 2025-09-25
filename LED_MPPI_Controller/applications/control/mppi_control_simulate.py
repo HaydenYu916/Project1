@@ -19,7 +19,7 @@ import pandas as pd
 TEMPERATURE_DEVICE_ID = None  # None=自动选择, "T6ncwg=="=指定设备1, "L_6vSQ=="=指定设备2
 
 # 控制循环间隔（分钟）
-CONTROL_INTERVAL_MINUTES = 1
+CONTROL_INTERVAL_MINUTES = 15
 
 
 # 红蓝比例键
@@ -92,18 +92,22 @@ class MPPIControlLoop:
             model_name=DEFAULT_MODEL_NAME  # 使用配置文件中的模型名称
         )
         
-        # 初始化MPPI控制器
+        # 初始化MPPI控制器（15分钟稳健配置）
         self.controller = LEDMPPIController(
             plant=self.plant,
-            horizon=10,           # 预测时域
-            num_samples=1000,     # 采样数量
-            dt=0.1,              # 时间步长
-            temperature=1.0,      # 温度参数
-            maintain_rb_ratio=True,  # 维持红蓝比例
-            rb_ratio_key="5:1"    # 红蓝比例键
+            horizon=5,            # 只看下一步（15分钟）
+            num_samples=600,     # 采样数量（稳健）
+            dt=900.0,             # 15分钟步长（秒）
+            temperature=1.2,      # MPPI温度（略保守）
+            maintain_rb_ratio=True,
+            rb_ratio_key="5:1"
         )
-        
-        # 使用MPPI控制器的默认参数，不进行覆盖设置
+
+        # 覆盖默认约束/权重/惩罚/采样噪声（保守稳定方案）
+        self.controller.set_constraints(pwm_min=5.0, pwm_max=85.0, temp_min=20.0, temp_max=29.0)
+        self.controller.penalties['temp_penalty'] = 200000.0
+        self.controller.set_weights(Q_photo=8.0, R_pwm=0.002, R_dpwm=0.08, R_power=0.02)
+        self.controller.pwm_std = np.array([8.0, 8.0], dtype=float)
         
         # 设备IP地址
         self.devices = DEVICES

@@ -104,13 +104,16 @@ def test_mppi_control():
         print(f"❌ MPPI控制错误: {e}")
         return None, None
 
-def test_command_generation(r_pwm, b_pwm):
+def test_command_generation():
     """测试命令生成"""
     print("\n📡 测试命令生成...")
     try:
         from shelly_controller import DEVICES
         import numpy as np
         
+        # 依赖上一测试获取的控制输出
+        from __main__ import __name__ as _entry_check  # no-op to quiet linters
+        r_pwm, b_pwm = test_mppi_control()
         if r_pwm is None or b_pwm is None:
             print("❌ 无效的PWM值")
             return False

@@ -30,7 +30,7 @@ DEFAULT_THERMAL_MASS = 150.0         # 热容/热惯量占位 (J/°C)
 
 # 预留：光学/功率相关参数（当前热模型未使用，后续扩展）
 DEFAULT_MAX_PPFD = 600.0             # 最大PPFD (μmol/m²/s)
-DEFAULT_MAX_POWER = 86.4             # 最大功率 (W)
+DEFAULT_MAX_POWER = 140             # 最大功率 (W)
 DEFAULT_LED_EFFICIENCY = 0.8         # 基础光效 (0..1)
 DEFAULT_EFFICIENCY_DECAY = 2.0       # 效率衰减系数（随PWM上升衰减）
 
@@ -173,6 +173,131 @@ class SecondOrderThermalModel(BaseThermalModel):
         return self.ambient_temp
 
 
+@dataclass(frozen=True)
+class UnifiedPPFDParams:
+    k1_a: float = 0.013198      # K1(u) = k1_a * u + k1_b
+    k1_b: float = 0.493192
+    t1_a: float = 0.009952      # tau1(u) = t1_a * u + t1_b
+    t1_b: float = 0.991167
+    k2_a: float = 0.013766      # K2(u) = k2_a * u**k2_p
+    k2_p: float = 0.988656
+    t2_a: float = 0.796845      # tau2(u) = t2_a * u**t2_p
+    t2_p: float = -0.144439
+
+
+def unified_temp_diff_model(t: float, input_value: float, p: UnifiedPPFDParams) -> float:
+    """纯函数：给定时间 t 与输入量 u，返回温度差 ΔT。"""
+    u = float(max(0.0, input_value))
+    if u <= 0.0:
+        return 0.0
+    k1 = p.k1_a * u + p.k1_b
+    tau1 = max(p.t1_a * u + p.t1_b, 1e-6)
+    k2 = p.k2_a * (u ** p.k2_p)
+    tau2 = max(p.t2_a * (u ** p.t2_p), 1e-6)
+    return float(k1 * (1.0 - math.exp(-float(t) / tau1)) + k2 * (1.0 - math.exp(-float(t) / tau2)))
+
+
+def _unified_steady_delta(input_value: float, p: UnifiedPPFDParams) -> float:
+    u = float(max(0.0, input_value))
+    if u <= 0.0:
+        return 0.0
+    k1 = p.k1_a * u + p.k1_b
+    k2 = p.k2_a * (u ** p.k2_p)
+    return float(k1 + k2)
+
+
+class UnifiedPPFDThermalModel(BaseThermalModel):
+    """统一PPFD热力学模型（函数式核心 + 面向对象外壳）
+
+    温度差统一模型（函数式）：
+        ΔT(t, u) = K1(u) * (1 - exp(-t/tau1(u))) + K2(u) * (1 - exp(-t/tau2(u)))
+    其中 u 为输入量（默认按 PPFD；5:1 情况可用 Solar_Vol 数值代入）。
+
+    质量：R²≈0.9254, MAE≈0.4654°C, RMSE≈0.6077°C。
+    """
+
+    def __init__(self, params: LedThermalParams | None = None, *, initial_temp: float | None = None, model_params: UnifiedPPFDParams | None = None) -> None:
+        self.params = params or LedThermalParams()
+        self.ambient_temp: float = (
+            float(initial_temp)
+            if initial_temp is not None
+            else float(self.params.base_ambient_temp)
+        )
+        self._time_elapsed: float = 0.0
+        self._current_ppfd: float = 0.0
+        self._eps_input: float = 1e-9  # 输入变化阈值；超过则视为新阶跃
+        self._mp: UnifiedPPFDParams = model_params or UnifiedPPFDParams()
+
+    def reset(self, ambient_temp: float | None = None) -> None:
+        """重置温度状态和时间累计"""
+        if ambient_temp is None:
+            self.ambient_temp = float(self.params.base_ambient_temp)
+        else:
+            self.ambient_temp = float(ambient_temp)
+        self._time_elapsed = 0.0
+        self._current_ppfd = 0.0
+
+    def target_temperature(self, ppfd: float) -> float:
+        """稳态温度：环境基准温度 + ΔT∞(u)。"""
+        ppfd_val = float(ppfd)
+        delta_t_steady = _unified_steady_delta(ppfd_val, self._mp)
+        return float(self.params.base_ambient_temp + delta_t_steady)
+
+    def step(self, ppfd: float, dt: float) -> float:
+        """前进一步，返回新的环境温度
+        
+        参数:
+            ppfd: 当前输入量（常规为PPFD；在5:1场景可直接传入Solar_Vol）
+            dt: 时间步长 (s)
+        """
+        if not (math.isfinite(ppfd) and math.isfinite(dt)):
+            raise ValueError("ppfd/dt 必须为有限实数")
+        if dt <= 0:
+            raise ValueError("dt 必须为正数")
+
+        ppfd_val = float(ppfd)
+        dt_val = float(dt)
+        
+        # 输入变化检测：若变化超过阈值，视为新的阶跃，时间归零
+        if abs(ppfd_val - self._current_ppfd) > self._eps_input:
+            self._time_elapsed = 0.0
+            self._current_ppfd = ppfd_val
+        else:
+            self._time_elapsed += dt_val
+        
+        if ppfd_val <= 0:
+            # PPFD为0时，温度向环境温度衰减
+            tau_decay = 10.0  # 衰减时间常数
+            alpha = 1.0 - math.exp(-dt_val / tau_decay)
+            self.ambient_temp = float(self.ambient_temp + alpha * (self.params.base_ambient_temp - self.ambient_temp))
+            return self.ambient_temp
+        
+        # 计算当前时刻的温度差（调用纯函数）
+        delta_t = unified_temp_diff_model(self._time_elapsed, ppfd_val, self._mp)
+        
+        # 更新环境温度
+        self.ambient_temp = float(self.params.base_ambient_temp + delta_t)
+        
+        return self.ambient_temp
+
+    def get_model_info(self) -> Dict[str, float]:
+        """获取当前模型状态信息"""
+        return {
+            'time_elapsed': self._time_elapsed,
+            'current_ppfd': self._current_ppfd,        # 兼容字段
+            'current_solar_vol': self._current_ppfd,   # 电压输入时更直观的命名
+            'ambient_temp': self.ambient_temp,
+            'base_ambient_temp': self.params.base_ambient_temp
+        }
+
+    # --- 便捷别名（当输入为 Solar_Vol 时可直接调用） ---
+    def step_with_solar_vol(self, solar_vol: float, dt: float) -> float:
+        return self.step(solar_vol, dt)
+
+    def target_temperature_solar_vol(self, solar_vol: float) -> float:
+        return self.target_temperature(solar_vol)
+
+
 # 兼容命名：保持 LedThermalModel 为一阶模型别名，便于外部直接使用
 LedThermalModel = FirstOrderThermalModel
 
@@ -181,11 +306,11 @@ LedThermalModel = FirstOrderThermalModel
 # 模块 3: LED 外观封装
 # =============================================================================
 class Led:
-    """LED 外观封装（仅热学）。
+    """LED 外观封装（支持热学和PPFD模型）。
 
     - 统一管理 `params` 与 `model` 的组合
-    - 面向业务的最小接口：reset / step_with_heat / target_temperature / get_temperature
-    - 不提供 PWM/功耗/PPFD 逻辑（保持热学解耦）。
+    - 面向业务的最小接口：reset / step_with_heat / step_with_ppfd / target_temperature / get_temperature
+    - 支持传统热学模型和新的统一PPFD模型
     """
 
     def __init__(
@@ -197,19 +322,49 @@ class Led:
     ) -> None:
         self.params = params or LedThermalParams()
         self.model: BaseThermalModel = create_model(model_type, self.params, initial_temp=initial_temp)
+        self._is_ppfd_model = isinstance(self.model, UnifiedPPFDThermalModel)
 
     def reset(self, ambient_temp: float | None = None) -> None:
         self.model.reset(ambient_temp)
 
     def step_with_heat(self, power: float, dt: float) -> float:
+        """传统热学步进：使用发热功率"""
+        if self._is_ppfd_model:
+            raise ValueError("统一PPFD模型不支持step_with_heat，请使用step_with_ppfd")
         return self.model.step(power, dt)
 
-    def target_temperature(self, power: float) -> float:
-        return self.model.target_temperature(power)
+    def step_with_ppfd(self, ppfd: float, dt: float) -> float:
+        """PPFD步进：使用PPFD值（仅统一PPFD模型支持）"""
+        if not self._is_ppfd_model:
+            raise ValueError("非PPFD模型不支持step_with_ppfd，请使用step_with_heat")
+        return self.model.step(ppfd, dt)
+
+    def target_temperature(self, input_val: float) -> float:
+        """计算目标温度
+        
+        参数:
+            input_val: 对于传统模型为发热功率(W)，对于PPFD模型为PPFD值(μmol/m²/s)
+        """
+        return self.model.target_temperature(input_val)
 
     @property
     def temperature(self) -> float:
         return self.model.ambient_temp
+
+    @property
+    def is_ppfd_model(self) -> bool:
+        """是否为PPFD模型"""
+        return self._is_ppfd_model
+
+    def get_model_info(self) -> Dict[str, float]:
+        """获取模型状态信息（仅PPFD模型支持）"""
+        if hasattr(self.model, 'get_model_info'):
+            return self.model.get_model_info()
+        else:
+            return {
+                'ambient_temp': self.model.ambient_temp,
+                'base_ambient_temp': self.params.base_ambient_temp
+            }
 
 
 def create_model(
@@ -225,6 +380,8 @@ def create_model(
         return FirstOrderThermalModel(params, initial_temp=initial_temp)
     if mt in {"second_order", "second", "2", "so"}:
         return SecondOrderThermalModel(params, initial_temp=initial_temp)
+    if mt in {"unified_ppfd", "ppfd", "unified", "3", "up"}:
+        return UnifiedPPFDThermalModel(params, initial_temp=initial_temp)
     raise ValueError(f"不支持的模型类型: {model_type}")
 def create_default_params() -> LedThermalParams:
     """便捷函数：创建默认热学参数。"""
@@ -475,6 +632,35 @@ class PWMtoPPFDModel:
         
         return coeffs.predict_pwm(ppfd)
 
+    def predict(self, *, r_pwm: float, b_pwm: float, key: Optional[str] = None) -> float:
+        """根据PWM值预测PPFD（反向预测）
+        
+        参数:
+            r_pwm: 红光PWM值
+            b_pwm: 蓝光PWM值
+            key: 标签（如"5:1", "r1"等），None使用第一个可用标签
+        
+        返回:
+            ppfd: 预测的PPFD值
+        """
+        if key is None:
+            # 使用第一个可用标签
+            if not self.by_label:
+                raise ValueError("没有可用的模型")
+            key = list(self.by_label.keys())[0]
+        
+        label_norm = _normalize_key(key)
+        coeffs = self.by_label.get(label_norm)
+        if coeffs is None:
+            raise KeyError(f"标签 '{key}' 的模型未找到")
+        
+        # 使用R_PWM模型进行反向预测：PPFD = (R_PWM - beta) / alpha
+        if abs(coeffs.alpha) < 1e-12:
+            raise ValueError(f"标签 '{key}' 的R_PWM模型斜率为0，无法进行反向预测")
+        
+        ppfd = (float(r_pwm) - coeffs.beta) / coeffs.alpha
+        return max(0.0, ppfd)  # 确保PPFD非负
+
     def get_model_info(self, label: str) -> Dict[str, float]:
         """获取指定标签的模型信息
         
@@ -691,6 +877,220 @@ class PowerLine:
         return float(self.a * float(total_pwm) + self.c)
 
 
+class SolarVolModel:
+    """按比例键（主要用于5:1）对 Total PWM→Solar_Vol 做线性拟合。
+
+    数据来源：ALL_Data.csv，字段名包含 'R_PWM','B_PWM','Solar_Vol','R:B' 或 'R:B' 等。
+    默认将相同 total_pwm 的多行做去重保留最后一个值，至少需要2个点来拟合。
+    """
+
+    def __init__(self) -> None:
+        self.by_key: Dict[str, PowerLine] = {}
+        self.overall: Optional[PowerLine] = None
+
+    @staticmethod
+    def _normalize_key(key: str) -> str:
+        s = str(key).strip().lower()
+        m = re.fullmatch(r"r\s*(\d+)", s)
+        if m:
+            return f"r{m.group(1)}"
+        return re.sub(r"\s+", "", s)
+
+    @classmethod
+    def from_all_data_csv(cls, csv_path: str, *, focus_key: Optional[str] = None) -> "SolarVolModel":
+        """从 ALL_Data.csv 拟合 total PWM → Solar_Vol 的直线模型。
+
+        focus_key: 若指定（如 "5:1"），则仅拟合该比例键并同时给出overall。
+        """
+        inst = cls()
+        rows_by_key: Dict[str, list[Tuple[float, float]]] = {}
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader((line for line in f if line.strip() and not line.lstrip().startswith("#")))
+
+            def _get(row: dict, *names: str) -> Optional[str]:
+                for name in names:
+                    if name in row:
+                        return row[name]
+                for name in names:
+                    for k, v in row.items():
+                        if k.replace(" ", "").lower() == name.replace(" ", "").lower():
+                            return v
+                return None
+
+            for row in reader:
+                key = _get(row, "R:B", "ratio", "Label", "KEY", "Key")
+                r_pwm = _get(row, "R_PWM", "r_pwm", "Red_PWM", "R PWM")
+                b_pwm = _get(row, "B_PWM", "b_pwm", "Blue_PWM", "B PWM")
+                solar_vol = _get(row, "Solar_Vol", "solar_vol")
+                if key is None or r_pwm is None or b_pwm is None or solar_vol is None:
+                    continue
+                if focus_key is not None and cls._normalize_key(key) != cls._normalize_key(focus_key):
+                    continue
+                try:
+                    r_pwm_f = float(r_pwm); b_pwm_f = float(b_pwm)
+                    sv_f = float(solar_vol)
+                except ValueError:
+                    continue
+                total_pwm = r_pwm_f + b_pwm_f
+                k = cls._normalize_key(key)
+                rows_by_key.setdefault(k, []).append((total_pwm, sv_f))
+
+        def _fit(pairs: list[Tuple[float, float]]) -> PowerLine:
+            pairs.sort(key=lambda t: t[0])
+            xs: list[float] = []
+            ys: list[float] = []
+            last_x: Optional[float] = None
+            for x, y in pairs:
+                if last_x is not None and abs(x - last_x) < 1e-9:
+                    ys[-1] = y
+                else:
+                    xs.append(x); ys.append(y); last_x = x
+            return _fit_line(list(zip(xs, ys)))
+
+        all_pairs: list[Tuple[float, float]] = []
+        for k, pairs in rows_by_key.items():
+            line = _fit(pairs)
+            inst.by_key[k] = line
+            all_pairs.extend(pairs)
+        inst.overall = _fit(all_pairs) if all_pairs else PowerLine(0.0, 0.0)
+        return inst
+
+    def predict(self, *, total_pwm: float, key: Optional[str] = None) -> float:
+        line = self.overall
+        if key is not None:
+            line = self.by_key.get(self._normalize_key(key), line)
+        if line is None:
+            raise RuntimeError("SolarVolModel 未拟合")
+        return line.predict(total_pwm)
+
+
+class SolarVolToPPFDModel:
+    """按比例键对 Solar_Vol ↔ PPFD 做线性拟合（带截距）。
+
+    - 主要用于 5:1（R:B≈0.83）场景，但也支持从文件中为其它比例键分别拟合。
+    - 提供双向预测：给定 Solar_Vol 预测 PPFD，或给定 PPFD 反解 Solar_Vol。
+    - 从 `Solar_Vol_clean.csv` 读取列："Solar_Vol", "PPFD", 以及键列（优先 "R:B"，其次 "ratio"/"Label"/"KEY"/"Key"）。
+    """
+
+    def __init__(self) -> None:
+        self.by_key: Dict[str, PowerLine] = {}
+        self.overall: Optional[PowerLine] = None
+
+    @staticmethod
+    def _normalize_key(key: str) -> str:
+        # 复用模块级规范；若失败则简单去空白
+        try:
+            return _normalize_key(key)
+        except Exception:
+            return re.sub(r"\s+", "", str(key).strip().lower())
+
+    @classmethod
+    def from_csv(cls, csv_path: str, *, focus_key: Optional[str] = None) -> "SolarVolToPPFDModel":
+        """从 Solar_Vol_clean.csv 拟合 Solar_Vol→PPFD 直线模型。
+
+        focus_key: 若指定（如 "5:1" 或 "0.83"），则仅拟合该键并同时给出 overall。
+        """
+        inst = cls()
+
+        def _map_ratio_to_key(ratio_val: float) -> str:
+            # 将 0.83 视作 5:1；其余返回原数值字符串
+            if math.isfinite(ratio_val) and abs(ratio_val - 0.83) < 0.02:
+                return "5:1"
+            return f"{ratio_val:.2f}"
+
+        rows_by_key: Dict[str, list[Tuple[float, float]]] = {}
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader((line for line in f if line.strip() and not line.lstrip().startswith("#")))
+
+            def _get(row: dict, *names: str) -> Optional[str]:
+                for name in names:
+                    if name in row:
+                        return row[name]
+                for name in names:
+                    for k, v in row.items():
+                        if k.replace(" ", "").lower() == name.replace(" ", "").lower():
+                            return v
+                return None
+
+            for row in reader:
+                sv = _get(row, "Solar_Vol", "solar_vol")
+                ppfd = _get(row, "PPFD", "ppfd")
+                key_raw = _get(row, "R:B", "ratio", "Label", "KEY", "Key")
+                if sv is None or ppfd is None:
+                    continue
+                try:
+                    sv_f = float(sv); ppfd_f = float(ppfd)
+                except ValueError:
+                    continue
+
+                # 跳过零点样本，避免 (0,0) 影响拟合（不强制经过零）
+                if abs(sv_f) < 1e-9 and abs(ppfd_f) < 1e-9:
+                    continue
+
+                if key_raw is None:
+                    key_norm = "overall"
+                else:
+                    # 允许数值比例或字符串比例
+                    try:
+                        ratio_val = float(key_raw)
+                        key_norm = cls._normalize_key(_map_ratio_to_key(ratio_val))
+                    except ValueError:
+                        key_norm = cls._normalize_key(str(key_raw))
+
+                if focus_key is not None and cls._normalize_key(focus_key) != key_norm:
+                    continue
+
+                rows_by_key.setdefault(key_norm, []).append((sv_f, ppfd_f))
+
+        def _fit(pairs: list[Tuple[float, float]]) -> PowerLine:
+            # 去除相同 x 的重复，仅保留最后值
+            pairs.sort(key=lambda t: t[0])
+            xs: list[float] = []
+            ys: list[float] = []
+            last_x: Optional[float] = None
+            for x, y in pairs:
+                if last_x is not None and abs(x - last_x) < 1e-9:
+                    ys[-1] = y
+                else:
+                    xs.append(x); ys.append(y); last_x = x
+            return _fit_line(list(zip(xs, ys)))
+
+        all_pairs: list[Tuple[float, float]] = []
+        for k, pairs in rows_by_key.items():
+            line = _fit(pairs)
+            inst.by_key[k] = line
+            all_pairs.extend(pairs)
+        inst.overall = _fit(all_pairs) if all_pairs else PowerLine(0.0, 0.0)
+        return inst
+
+    def _get_line(self, key: Optional[str]) -> PowerLine:
+        line = self.overall
+        if key is not None:
+            line = self.by_key.get(self._normalize_key(key), line)
+        if line is None:
+            raise RuntimeError("SolarVolToPPFDModel 未拟合")
+        return line
+
+    def predict_ppfd(self, *, solar_vol: float, key: Optional[str] = None) -> float:
+        """给定 Solar_Vol，预测 PPFD。"""
+        line = self._get_line(key)
+        return float(line.predict(float(solar_vol)))
+
+    def predict_solar_vol(self, *, ppfd: float, key: Optional[str] = None) -> float:
+        """给定 PPFD，反解 Solar_Vol（使用 y = a*x + c 的解析逆）。"""
+        line = self._get_line(key)
+        a = float(line.a); c = float(line.c)
+        if abs(a) < 1e-12:
+            return 0.0
+        return float((float(ppfd) - c) / a)
+
+    def list_keys(self) -> List[str]:
+        return list(self.by_key.keys())
+
+    def get_line_info(self, key: Optional[str] = None) -> Dict[str, float]:
+        line = self._get_line(key)
+        return {"a": float(line.a), "c": float(line.c)}
+
 def _load_power_rows(csv_path: str) -> Dict[str, list[Tuple[float, float]]]:
     """加载功率数据并按标签分组 - 与模块4保持一致"""
     rows_by_key: Dict[str, list[Tuple[float, float]]] = {}
@@ -813,12 +1213,15 @@ def forward_step(
     use_efficiency: bool = False,
     eta_model: Optional[Callable[[float, float, float, float, LedThermalParams], float]] = None,
     heat_scale: float = 1.0,
+    use_unified_ppfd: bool = False,  # 是否使用统一PPFD模型
+    use_solar_vol_for_5_1: bool = False,  # 在5:1场景下以Solar_Vol替代PPFD
 ) -> LedForwardOutput:
     """统一的前向一步接口：PWM → 功率/PPFD → 热功率 → 温度。
 
     - 不依赖效率模型即可使用：默认 p_heat = heat_scale * p_elec（建议 heat_scale=1 或 0.6~0.8）
     - 若 use_efficiency=True，需提供 eta_model(r,b,total, temp, params) → η，热功率 p_heat = p_elec*(1-η)
     - model_key: None 或 "overall" 走整体模型；传 "5:1" 等则使用对应比例键
+    - use_unified_ppfd: 是否使用统一PPFD模型（需要ppfd_model支持）
     """
     # 1) 裁剪 PWM 到 0..100
     r = max(0.0, min(100.0, float(r_pwm)))
@@ -829,23 +1232,35 @@ def forward_step(
     key_arg = None if (model_key is None or str(model_key).lower() == "overall") else model_key
     p_elec = float(power_model.predict(total_pwm=total, key=key_arg))
 
-    # 3) 预测 PPFD（可选）
+    # 3) 预测 PPFD 或 Solar_Vol（可选）
     ppfd_val: Optional[float] = None
     if ppfd_model is not None:
-        ppfd_val = float(ppfd_model.predict(r_pwm=r, b_pwm=b, key=key_arg))
+        if use_solar_vol_for_5_1 and (key_arg is None or str(key_arg) == "5:1"):
+            # 当指定5:1并要求使用Solar_Vol时，仍复用ppfd字段承载该数值
+            ppfd_val = float(ppfd_model.predict(r_pwm=r, b_pwm=b, key="5:1"))
+        else:
+            ppfd_val = float(ppfd_model.predict(r_pwm=r, b_pwm=b, key=key_arg))
 
-    # 4) 计算热功率
-    eff_val: Optional[float] = None
-    if use_efficiency:
-        if eta_model is None:
-            raise ValueError("use_efficiency=True 需要提供 eta_model 回调")
-        eff_val = float(max(0.0, min(1.0, eta_model(r, b, total, thermal_model.ambient_temp, thermal_model.params))))
-        p_heat = p_elec * (1.0 - eff_val)
+    # 4) 热学步进 - 根据模型类型选择不同方式
+    if use_unified_ppfd and isinstance(thermal_model, UnifiedPPFDThermalModel):
+        if ppfd_val is None:
+            raise ValueError("使用统一PPFD模型需要提供ppfd_model")
+        new_temp = float(thermal_model.step(ppfd=ppfd_val, dt=float(dt)))
+        # 统一PPFD模型不计算热功率，设为0
+        p_heat = 0.0
+        eff_val = None
     else:
-        p_heat = p_elec * float(heat_scale)
-
-    # 5) 热学步进
-    new_temp = float(thermal_model.step(power=p_heat, dt=float(dt)))
+        # 传统热学模型：计算热功率
+        eff_val: Optional[float] = None
+        if use_efficiency:
+            if eta_model is None:
+                raise ValueError("use_efficiency=True 需要提供 eta_model 回调")
+            eff_val = float(max(0.0, min(1.0, eta_model(r, b, total, thermal_model.ambient_temp, thermal_model.params))))
+            p_heat = p_elec * (1.0 - eff_val)
+        else:
+            p_heat = p_elec * float(heat_scale)
+        
+        new_temp = float(thermal_model.step(power=p_heat, dt=float(dt)))
 
     return LedForwardOutput(
         temp=new_temp,
@@ -871,6 +1286,8 @@ def forward_step_batch(
     use_efficiency: bool = False,
     eta_model: Optional[Callable[[float, float, float, float, LedThermalParams], float]] = None,
     heat_scale: float = 1.0,
+    use_unified_ppfd: bool = False,  # 是否使用统一PPFD模型
+    use_solar_vol_for_5_1: bool = False,  # 在5:1场景下以Solar_Vol替代PPFD
 ) -> List[LedForwardOutput]:
     """批量前向步进：NumPy 向量化电功率/PPFD/热功率，热学更新逐实例写回。"""
     n = len(thermal_models)
@@ -896,35 +1313,64 @@ def forward_step_batch(
         if coeffs is None:
             raise RuntimeError("ppfd_model 未拟合或缺少系数")
         ppfd_vals = coeffs.a_r * r + coeffs.a_b * b + coeffs.intercept
+        if use_solar_vol_for_5_1 and (key_arg is None or str(key_arg) == "5:1"):
+            # 5:1 时使用相同线性形式承载 Solar_Vol 值
+            pass
     else:
         ppfd_vals = np.full(n, np.nan)
 
-    # 热功率（无效率模型时使用 heat_scale）
-    if use_efficiency:
-        if eta_model is None:
-            raise ValueError("use_efficiency=True 需要提供 eta_model 回调")
-        # 逐实例计算效率（依赖温度和参数），此处循环
-        eff_list = np.empty(n, dtype=float)
-        for i in range(n):
-            eff_list[i] = float(max(0.0, min(1.0, eta_model(float(r[i]), float(b[i]), float(total[i]), float(thermal_models[i].ambient_temp), thermal_models[i].params))))
-        p_heat = p_elec * (1.0 - eff_list)
-    else:
+    # 检查是否有统一PPFD模型
+    has_unified_ppfd = any(isinstance(m, UnifiedPPFDThermalModel) for m in thermal_models)
+    
+    if use_unified_ppfd and has_unified_ppfd:
+        # 统一PPFD模型：直接使用PPFD进行热学更新
+        if ppfd_model is None:
+            raise ValueError("使用统一PPFD模型需要提供ppfd_model")
+        
+        new_temps = np.empty(n, dtype=float)
+        p_heat = np.zeros(n, dtype=float)  # 统一PPFD模型不计算热功率
         eff_list = np.full(n, np.nan)
-        p_heat = p_elec * float(heat_scale)
+        
+        # 逐实例更新（因为每个模型可能有不同的累计时间）
+        for i, m in enumerate(thermal_models):
+            if isinstance(m, UnifiedPPFDThermalModel):
+                new_temps[i] = float(m.step(ppfd=float(ppfd_vals[i]), dt=float(dt)))
+            else:
+                # 混合模型：传统模型仍使用热功率
+                if use_efficiency and eta_model is not None:
+                    eff_val = float(max(0.0, min(1.0, eta_model(float(r[i]), float(b[i]), float(total[i]), float(m.ambient_temp), m.params))))
+                    p_heat[i] = p_elec[i] * (1.0 - eff_val)
+                    eff_list[i] = eff_val
+                else:
+                    p_heat[i] = p_elec[i] * float(heat_scale)
+                new_temps[i] = float(m.step(power=p_heat[i], dt=float(dt)))
+    else:
+        # 传统热学模型：计算热功率
+        if use_efficiency:
+            if eta_model is None:
+                raise ValueError("use_efficiency=True 需要提供 eta_model 回调")
+            # 逐实例计算效率（依赖温度和参数），此处循环
+            eff_list = np.empty(n, dtype=float)
+            for i in range(n):
+                eff_list[i] = float(max(0.0, min(1.0, eta_model(float(r[i]), float(b[i]), float(total[i]), float(thermal_models[i].ambient_temp), thermal_models[i].params))))
+            p_heat = p_elec * (1.0 - eff_list)
+        else:
+            eff_list = np.full(n, np.nan)
+            p_heat = p_elec * float(heat_scale)
 
-    # 向量化热学更新（读取参数与状态，批量计算，再写回）
-    temps = np.array([m.ambient_temp for m in thermal_models], dtype=float)
-    base = np.array([m.params.base_ambient_temp for m in thermal_models], dtype=float)
-    rth = np.array([m.params.thermal_resistance for m in thermal_models], dtype=float)
-    tau = np.maximum(np.array([m.params.time_constant_s for m in thermal_models], dtype=float), 1e-6)
-    # 指数离散化 alpha = 1 - exp(-dt/tau)
-    alpha = 1.0 - np.exp(-float(dt) / tau)
-    target = base + p_heat * rth
-    new_temps = temps + alpha * (target - temps)
+        # 向量化热学更新（读取参数与状态，批量计算，再写回）
+        temps = np.array([m.ambient_temp for m in thermal_models], dtype=float)
+        base = np.array([m.params.base_ambient_temp for m in thermal_models], dtype=float)
+        rth = np.array([m.params.thermal_resistance for m in thermal_models], dtype=float)
+        tau = np.maximum(np.array([m.params.time_constant_s for m in thermal_models], dtype=float), 1e-6)
+        # 指数离散化 alpha = 1 - exp(-dt/tau)
+        alpha = 1.0 - np.exp(-float(dt) / tau)
+        target = base + p_heat * rth
+        new_temps = temps + alpha * (target - temps)
 
-    # 写回模型状态
-    for i, m in enumerate(thermal_models):
-        m.ambient_temp = float(new_temps[i])
+        # 写回模型状态
+        for i, m in enumerate(thermal_models):
+            m.ambient_temp = float(new_temps[i])
 
     # 组装输出列表
     outputs: List[LedForwardOutput] = []
@@ -953,6 +1399,7 @@ __all__ = [
     "BaseThermalModel",
     "FirstOrderThermalModel",
     "SecondOrderThermalModel",
+    "UnifiedPPFDThermalModel",  # 新增统一PPFD模型
     "LedThermalModel",
     "Led",
     "create_model",
@@ -978,6 +1425,8 @@ __all__ = [
     # Power linear fit
     "PowerLine",
     "PWMtoPowerModel",
+    "SolarVolModel",
+    "SolarVolToPPFDModel",
     # Forward stepping for MPPI
     "LedForwardOutput",
     "forward_step",
