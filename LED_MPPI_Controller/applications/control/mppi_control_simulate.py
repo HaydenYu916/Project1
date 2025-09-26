@@ -92,22 +92,60 @@ class MPPIControlLoop:
             model_name=DEFAULT_MODEL_NAME  # 使用配置文件中的模型名称
         )
         
-        # 初始化MPPI控制器（15分钟稳健配置）
+        # 参数档位（低/中/高），可快速切换
+        PARAM_PROFILES = {
+            'low': {
+                'horizon': 5,
+                'num_samples': 600,
+                'dt': 900.0,
+                'temperature': 1.2,
+                'constraints': dict(pwm_min=5.0, pwm_max=85.0, temp_min=20.0, temp_max=29.0),
+                'penalties': dict(temp_penalty=200000.0),
+                'weights': dict(Q_photo=20.0, R_pwm=0.002, R_dpwm=0.08, R_power=0.02),
+                'pwm_std': np.array([8.0, 8.0], dtype=float),
+            },
+            'mid': {
+                'horizon': 5,
+                'num_samples': 700,
+                'dt': 900.0,
+                'temperature': 1.1,
+                'constraints': dict(pwm_min=5.0, pwm_max=90.0, temp_min=20.0, temp_max=30.0),
+                'penalties': dict(temp_penalty=120000.0),
+                'weights': dict(Q_photo=12.0, R_pwm=0.001, R_dpwm=0.06, R_power=0.01),
+                'pwm_std': np.array([10.0, 10.0], dtype=float),
+            },
+            'high': {
+                'horizon': 5,
+                'num_samples': 800,
+                'dt': 900.0,
+                'temperature': 1.2,
+                'constraints': dict(pwm_min=5.0, pwm_max=95.0, temp_min=20.0, temp_max=31.0),
+                'penalties': dict(temp_penalty=600.0),
+                'weights': dict(Q_photo=20.0, R_pwm=0.0005, R_dpwm=0.04, R_power=0.004),
+                'pwm_std': np.array([14.0, 14.0], dtype=float),
+            },
+        }
+
+        PROFILE = 'low'  # 可改为 'mid' 或 'low'
+        prof = PARAM_PROFILES[PROFILE]
+
+        # 初始化MPPI控制器（按档位）
         self.controller = LEDMPPIController(
             plant=self.plant,
-            horizon=5,            # 只看下一步（15分钟）
-            num_samples=600,     # 采样数量（稳健）
-            dt=900.0,             # 15分钟步长（秒）
-            temperature=1.2,      # MPPI温度（略保守）
+            horizon=prof['horizon'],
+            num_samples=prof['num_samples'],
+            dt=prof['dt'],
+            temperature=prof['temperature'],
             maintain_rb_ratio=True,
             rb_ratio_key="5:1"
         )
 
-        # 覆盖默认约束/权重/惩罚/采样噪声（保守稳定方案）
-        self.controller.set_constraints(pwm_min=5.0, pwm_max=85.0, temp_min=20.0, temp_max=29.0)
-        self.controller.penalties['temp_penalty'] = 200000.0
-        self.controller.set_weights(Q_photo=8.0, R_pwm=0.002, R_dpwm=0.08, R_power=0.02)
-        self.controller.pwm_std = np.array([8.0, 8.0], dtype=float)
+        # 应用档位配置
+        self.controller.set_constraints(**prof['constraints'])
+        for k, v in prof['penalties'].items():
+            self.controller.penalties[k] = v
+        self.controller.set_weights(**prof['weights'])
+        self.controller.pwm_std = prof['pwm_std']
         
         # 设备IP地址
         self.devices = DEVICES
@@ -364,6 +402,12 @@ class MPPIControlLoop:
                 note = "CO2读取失败，使用上次PWM"
             else:
                 # 3. 运行MPPI控制
+                # 在仿真中，如可读取 CO2，则先设置到 plant
+                if current_co2 is not None:
+                    try:
+                        self.plant.set_env_co2(float(current_co2))
+                    except Exception:
+                        pass
                 r_pwm, b_pwm, control_ok, cost = self.run_mppi_control(current_temp)
                 if not control_ok:
                     print("❌ MPPI控制失败，使用上一次PWM控制结果")

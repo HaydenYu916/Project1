@@ -35,6 +35,57 @@ except ImportError:
 RB_RATIO_KEY = "5:1"
 
 
+def calculate_ppfd_from_solar_vol(solar_vol, rb_ratio):
+    """
+    根据Solar_Vol和R:B比例计算PPFD
+    基于ALL_Data.csv的线性关系，使用插值方法
+    """
+    # R:B比例到模型参数的映射（基于ALL_Data.csv的线性拟合结果）
+    models = {
+        0.5: {"slope": 522.740000, "intercept": -428.340000},
+        0.75: {"slope": 574.100000, "intercept": -477.850000},
+        0.83: {"slope": 661.330000, "intercept": -612.560000},
+        0.88: {"slope": 781.100000, "intercept": -806.490000},
+        1.0: {"slope": 517.820000, "intercept": -409.070000},
+    }
+    
+    # 找到最接近的R:B比例
+    available_ratios = list(models.keys())
+    closest_ratio = min(available_ratios, key=lambda x: abs(x - rb_ratio))
+    
+    # 使用对应的模型计算PPFD
+    model = models[closest_ratio]
+    ppfd = model["slope"] * solar_vol + model["intercept"]
+    
+    # 如果计算出的PPFD为负值，说明Solar_Vol超出了该R:B比例的有效范围
+    # 使用插值方法：假设Solar_Vol=0时PPFD=0
+    if ppfd < 0:
+        # 找到该R:B比例下最小的Solar_Vol值（对应PPFD=100）
+        min_solar_vols = {
+            0.5: 0.839616,
+            0.75: 0.827675,
+            0.83: 1.017639,
+            0.88: 1.272704,
+            1.0: 0.818815,
+        }
+        
+        min_solar_vol = min_solar_vols[closest_ratio]
+        min_ppfd = 100.0  # 对应最小Solar_Vol的PPFD值
+        
+        # 线性插值：从(0, 0)到(min_solar_vol, min_ppfd)
+        if solar_vol <= min_solar_vol:
+            ppfd = (min_ppfd / min_solar_vol) * solar_vol
+        else:
+            # 超出范围，使用原始模型
+            ppfd = model["slope"] * solar_vol + model["intercept"]
+            # 如果仍然为负，使用最小PPFD值
+            if ppfd < 0:
+                ppfd = min_ppfd
+    
+    # 确保PPFD非负
+    return max(0.0, ppfd)
+
+
 def get_ratio_weights(key: str) -> tuple[float, float]:
     s = str(key).strip().lower().replace(" ", "")
     if s in ("r1", "r:1"):
@@ -225,6 +276,8 @@ class LEDPlant:
         self.ppfd_model = ppfd_model or PWMtoPPFDModel().fit(DEFAULT_CALIB_CSV)
         self.eta_model = eta_model
         self.model_name = model_name  # 保存模型名称
+        # 环境CO2（ppm），可由外部动态设置
+        self.current_co2: float = 400.0
 
         # 光合作用预测器（必需）
         self.photo_predictor = pn_predictor
@@ -263,16 +316,29 @@ class LEDPlant:
         photosynthesis_rate = self.get_photosynthesis_rate(out.ppfd or 0.0, out.temp, rb_ratio=rb_ratio)
         return (out.ppfd or 0.0), out.temp, out.power, photosynthesis_rate
 
-    def get_photosynthesis_rate(self, ppfd, temperature, co2=400, rb_ratio=0.83):
+    def get_photosynthesis_rate(self, ppfd, temperature, co2=None, rb_ratio=0.83, solar_vol=None):
         if not self.use_photo_model or self.photo_predictor is None:
             raise RuntimeError("光合作用预测器未正确初始化")
         
         try:
-            return float(self.photo_predictor.predict(ppfd, co2, temperature, rb_ratio))
+            co2_value = float(self.current_co2 if co2 is None else co2)
+            
+            # 如果使用solar_vol模型且有Solar_Vol值，使用Solar_Vol值
+            if (self.model_name == 'solar_vol' and solar_vol is not None):
+                return float(self.photo_predictor.predict(solar_vol, co2_value, temperature, rb_ratio))
+            else:
+                # 否则使用PPFD值
+                return float(self.photo_predictor.predict(ppfd, co2_value, temperature, rb_ratio))
         except Exception as e:
             raise RuntimeError(f"光合作用预测失败: {e}") from e
 
-    def predict(self, pwm_sequence_rb: np.ndarray, initial_temp: float, dt: float = 0.1):
+    def set_env_co2(self, co2_ppm: float) -> None:
+        try:
+            self.current_co2 = float(co2_ppm)
+        except Exception:
+            pass
+
+    def predict(self, pwm_sequence_rb: np.ndarray, initial_temp: float, dt: float = 0.1, solar_vol=None):
         self.thermal.reset(initial_temp)
         ppfd_pred, temp_pred, power_pred, photo_pred = [], [], [], []
         for r_pwm, b_pwm in np.asarray(pwm_sequence_rb, dtype=float):
@@ -288,10 +354,19 @@ class LEDPlant:
                 heat_scale=self.heat_scale,
                 eta_model=self.eta_model,
             )
-            ppfd_pred.append(out.ppfd or 0.0)
+            
+            # 使用新的PPFD计算函数（基于Solar_Vol）
+            if solar_vol is not None:
+                total_pwm = float(r_pwm) + float(b_pwm)
+                rb_ratio = float(r_pwm) / total_pwm if total_pwm > 0 else 0.83
+                calculated_ppfd = calculate_ppfd_from_solar_vol(solar_vol, rb_ratio)
+                ppfd_pred.append(calculated_ppfd)
+            else:
+                ppfd_pred.append(out.ppfd or 0.0)
+            
             temp_pred.append(out.temp)
             power_pred.append(out.power)
-            photo_pred.append(self.get_photosynthesis_rate(out.ppfd or 0.0, out.temp))
+            photo_pred.append(self.get_photosynthesis_rate(ppfd_pred[-1], out.temp, solar_vol=solar_vol))
         return (
             np.asarray(ppfd_pred, dtype=float),
             np.asarray(temp_pred, dtype=float),
@@ -301,7 +376,8 @@ class LEDPlant:
 
 
 class LEDMPPIController:
-    def __init__(self, plant, horizon=5, num_samples=500, dt=900, temperature=1.0, maintain_rb_ratio=False, rb_ratio_key="5:1"):
+    def __init__(self, plant, horizon=5, num_samples=500, dt=900, temperature=1.2, maintain_rb_ratio=False, rb_ratio_key="5:1"):
+        #temp =0.4 & 0.2
         self.plant = plant
         self.horizon = horizon
         self.num_samples = num_samples
@@ -313,11 +389,11 @@ class LEDMPPIController:
         self.maintain_rb_ratio = maintain_rb_ratio
         self.rb_ratio_key = rb_ratio_key
         if maintain_rb_ratio:
-            self.w_r, self.w_b = get_ratio_(rb_ratio_key)
+            self.w_r, self.w_b = get_ratio_weights(rb_ratio_key)
         else:
             self.w_r, self.w_b = 1.0, 1.0
 
-        self.weights = {'Q_photo': 10.0, 'R_pwm': 0.001, 'R_dpwm': 0.05, 'R_power': 0.01}
+        self.weights = {'Q_photo': 10.0, 'R_pwm': 0.001, 'R_dpwm': 0.05, 'R_power': 0.01} # find the unit first
         self.constraints = {'pwm_min': 5.0, 'pwm_max': 95.0, 'temp_min': 20.0, 'temp_max': 30.0}
         self.penalties = {'temp_penalty': 100000.0, 'pwm_penalty': 1000.0}
         self.pwm_std = np.array([15.0, 15.0], dtype=float)
@@ -414,4 +490,3 @@ class LEDMPPIController:
             reduced = np.clip(pwm_action_rb * 0.7, self.constraints['pwm_min'], self.constraints['pwm_max'])
             return reduced
         return pwm_action_rb
-weights
