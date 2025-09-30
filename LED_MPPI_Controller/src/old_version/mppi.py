@@ -57,17 +57,17 @@ def calculate_ppfd_from_solar_vol(solar_vol, rb_ratio):
     model = models[closest_ratio]
     ppfd = model["slope"] * solar_vol + model["intercept"]
     
-    # 如果计算出的PPFD为负值，说明Solar_Vol超出了该R:B比例的有效范围
-    # 使用插值方法：假设Solar_Vol=0时PPFD=0
-    if ppfd < 0:
-        # 找到该R:B比例下最小的Solar_Vol值（对应PPFD=100）
-        min_solar_vols = {
-            0.5: 0.839616,
-            0.75: 0.827675,
-            0.83: 1.017639,
-            0.88: 1.272704,
-            1.0: 0.818815,
-        }
+        # 如果计算出的PPFD为负值，说明Solar_Vol超出了该R:B比例的有效范围
+        # 使用插值方法：假设Solar_Vol=0时PPFD=0
+        if ppfd < 0:
+            # 找到该R:B比例下最小的Solar_Vol值（对应PPFD=100）
+            min_solar_vols = {
+                0.5: 0.839616,
+                0.75: 0.827675,
+                0.83: 1.017639,
+                0.88: 1.272704,
+                1.0: 0.818815,
+            }
         
         min_solar_vol = min_solar_vols[closest_ratio]
         min_ppfd = 100.0  # 对应最小Solar_Vol的PPFD值
@@ -393,7 +393,7 @@ class LEDMPPIController:
         else:
             self.w_r, self.w_b = 1.0, 1.0
 
-        self.weights = {'Q_photo': 10.0, 'R_pwm': 0.001, 'R_dpwm': 0.05, 'R_power': 0.01} # find the unit first
+        self.weights = {'Q_photo': 100.0, 'R_pwm': 0.001, 'R_dpwm': 0.05, 'R_power': 0.01} # find the unit first
         self.constraints = {'pwm_min': 5.0, 'pwm_max': 95.0, 'temp_min': 20.0, 'temp_max': 30.0}
         self.penalties = {'temp_penalty': 100000.0, 'pwm_penalty': 1000.0}
         self.pwm_std = np.array([15.0, 15.0], dtype=float)

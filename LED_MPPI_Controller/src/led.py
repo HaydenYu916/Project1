@@ -9,11 +9,10 @@ from __future__ import annotations
 4. 前向步进接口 - MPPI 控制器使用的前向仿真
 """
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import math
 import os
-import json
 import csv
 import re
 from typing import Iterable, Optional, Tuple, Dict, Callable, Sequence, List
@@ -198,6 +197,11 @@ def unified_temp_diff_model(t: float, input_value: float, p: UnifiedPPFDParams) 
 
 
 def _unified_steady_delta(input_value: float, p: UnifiedPPFDParams) -> float:
+    """稳态温差 ΔT∞(u)。
+
+    给定输入量 u（如 PPFD 或 Solar_Vol），返回长时间后达到的温差：
+        ΔT∞(u) = K1(u) + K2(u)
+    """
     u = float(max(0.0, input_value))
     if u <= 0.0:
         return 0.0
@@ -349,6 +353,7 @@ class Led:
 
     @property
     def temperature(self) -> float:
+        """当前模型维护的环境温度（°C）。"""
         return self.model.ambient_temp
 
     @property
@@ -785,6 +790,7 @@ class PowerInterpolator:
 
     @classmethod
     def from_csv(cls, csv_path: str) -> "PowerInterpolator":
+        """从标定CSV构建插值器（按比例键聚合 total PWM→total Power 样本）。"""
         inst = cls()
         by_key_pairs: Dict[str, list[Tuple[float, float]]] = {}
         with open(csv_path, newline="", encoding="utf-8") as f:
@@ -835,6 +841,13 @@ class PowerInterpolator:
         return inst
 
     def predict_power(self, *, total_pwm: float, key: str, clamp: bool = True) -> float:
+        """预测在给定比例键下，总PWM对应的总功率(W)。
+
+        参数:
+            total_pwm: R+B 的总PWM百分比
+            key: 比例键（如 "5:1"、"r1" 等）
+            clamp: 是否对区间外进行端点截断
+        """
         import bisect
         k = self._normalize_key(key)
         if k not in self.by_key:
@@ -854,22 +867,16 @@ class PowerInterpolator:
         return float(y0 + t * (y1 - y0))
 
 
-def energy_kwh(power_w: float, hours: float) -> float:
-    """单点恒功率能耗：P(W) × t(h) → kWh。"""
-    return float(power_w) / 1000.0 * float(hours)
-
-
-def energy_series_kwh(powers_w: Iterable[float], dt_s: float) -> float:
-    """时间序列能耗：Σ P_i(W) × dt(s) / 3,600,000 → kWh。"""
-    total_ws = 0.0
-    dt = float(dt_s)
-    for p in powers_w:
-        total_ws += float(p) * dt
-    return total_ws / 3_600_000.0
+# 说明：能耗工具函数未在主链路中使用，移出核心库以精简体积。
 
 
 @dataclass(frozen=True)
 class PowerLine:
+    """简单线性模型 y = a*x + c（用于功率/电压等标定线）。
+
+    - a: 斜率
+    - c: 截距
+    """
     a: float  # slope (W per % total PWM)
     c: float  # intercept (W)
 
@@ -885,11 +892,13 @@ class SolarVolModel:
     """
 
     def __init__(self) -> None:
+        # 已弃用：该模型未在主控制链路中使用，建议改用 SolarVolToPPFDModel
         self.by_key: Dict[str, PowerLine] = {}
         self.overall: Optional[PowerLine] = None
 
     @staticmethod
     def _normalize_key(key: str) -> str:
+        """标准化比例键表示（支持如"r1"、去除空白等）。"""
         s = str(key).strip().lower()
         m = re.fullmatch(r"r\s*(\d+)", s)
         if m:
@@ -902,6 +911,7 @@ class SolarVolModel:
 
         focus_key: 若指定（如 "5:1"），则仅拟合该比例键并同时给出overall。
         """
+        # 保留兼容接口，但标记为不推荐使用
         inst = cls()
         rows_by_key: Dict[str, list[Tuple[float, float]]] = {}
         with open(csv_path, newline="", encoding="utf-8") as f:
@@ -1418,10 +1428,8 @@ __all__ = [
     "PpfdModelCoeffs",
     "PWMtoPPFDModel",
     "solve_pwm_for_target_ppfd",
-    # Power interpolation & energy
+    # Power interpolation
     "PowerInterpolator",
-    "energy_kwh",
-    "energy_series_kwh",
     # Power linear fit
     "PowerLine",
     "PWMtoPowerModel",

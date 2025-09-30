@@ -7,7 +7,6 @@
 
 import sys
 import os
-import pandas as pd
 import time
 
 # ==================== 配置宏定义 ====================
@@ -19,40 +18,26 @@ CO2_FILE = "/data/csv/co2_sensor.csv"
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.join(current_dir, '..', '..')
 
+try:
+    from .sensor_reader import DemoSensorReader
+except ImportError:
+    # 兼容直接运行
+    sys.path.insert(0, os.path.dirname(__file__))
+    from sensor_reader import DemoSensorReader  # type: ignore
+
 def read_co2():
-    """读取当前CO2数据"""
+    """通过统一的 SensorReading 读取当前CO2数据"""
     try:
-        if not os.path.exists(CO2_FILE):
-            print("⚠️  CO2文件不存在")
+        reader = DemoSensorReader(co2_data_path=CO2_FILE)
+        co2, ts = reader.read_latest_co2_with_timestamp()
+        if co2 is None or ts is None:
             return None
-        
-        # 读取CO2数据文件
-        df = pd.read_csv(CO2_FILE, header=None, names=['timestamp', 'co2'])
-        
-        if df.empty:
-            print("⚠️  CO2文件为空")
-            return None
-        
-        # 获取最新的有效CO2值
-        latest_row = df.iloc[-1]
-        latest_timestamp = latest_row['timestamp']
-        latest_co2 = latest_row['co2']
-        
-        # 检查CO2值是否有效
-        if pd.isna(latest_co2) or latest_co2 is None:
-            print("⚠️  最新CO2值无效")
-            return None
-        
-        # 计算数据年龄（秒）
-        current_time = time.time()
-        age_seconds = current_time - latest_timestamp
-        
+        age_seconds = max(0.0, time.time() - float(ts))
         return {
-            'co2': latest_co2,
-            'timestamp': latest_timestamp,
-            'age_seconds': age_seconds
+            'co2': float(co2),
+            'timestamp': float(ts),
+            'age_seconds': age_seconds,
         }
-        
     except Exception as e:
         print(f"❌ CO2读取错误: {e}")
         return None
@@ -82,4 +67,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
