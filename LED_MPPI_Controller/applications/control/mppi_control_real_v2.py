@@ -25,8 +25,8 @@ import numpy as np
 
 # 固定默认参数，可按需修改
 CONTROL_INTERVAL_MINUTES = 15.0
-DEFAULT_TARGET_PHOTO = 13.0  # μmol/m²/s
-DEFAULT_REFERENCE_WEIGHT = 40.0
+DEFAULT_TARGET_SOLAR_VOL = 1.6  # 固定的Solar Vol目标值
+DEFAULT_REFERENCE_WEIGHT = 25.0  # Solar Vol参考跟踪权重
 RB_RATIO = 0.83
 STATUS_CHECK_DELAY = 3.0
 NIGHT_START_HOUR = 23
@@ -80,7 +80,7 @@ class MPPIControlV2:
         ensure_log_dir()
         self.background = background
         self.control_interval_seconds = CONTROL_INTERVAL_MINUTES * 60.0
-        self.target_photo = DEFAULT_TARGET_PHOTO
+        self.target_solar_vol = DEFAULT_TARGET_SOLAR_VOL
         self.reference_weight = DEFAULT_REFERENCE_WEIGHT
         self.current_temp: Optional[float] = None
         self.devices = DEVICES
@@ -160,7 +160,7 @@ class MPPIControlV2:
                         "pred_temp",
                         "pred_power",
                         "pred_pn",
-                        "target_pn",
+                        "target_solar_vol",
                         "cost",
                         "success",
                         "note",
@@ -206,10 +206,11 @@ class MPPIControlV2:
             "co2": self.co2_fallback if co2 is None else float(co2),
         }
 
-    def _make_photo_reference(self) -> Optional[np.ndarray]:
-        if self.target_photo is None or self.reference_weight <= 0:
+    def _make_solar_vol_reference(self) -> Optional[np.ndarray]:
+        # 生成固定的Solar Vol参考序列
+        if self.target_solar_vol is None or self.reference_weight <= 0:
             return None
-        return np.full(self.controller.horizon, self.target_photo, dtype=float)
+        return np.full(self.controller.horizon, self.target_solar_vol, dtype=float)
 
     def _send_pwm(self, r_pwm: float, b_pwm: float) -> Dict[str, Any]:
         result: Dict[str, Any] = {"red": None, "blue": None}
@@ -276,12 +277,13 @@ class MPPIControlV2:
             self.current_temp = 25.0
 
         current_temp = float(self.current_temp)
-        photo_ref = self._make_photo_reference()
+        # 使用固定的Solar Vol参考值进行跟踪控制
+        solar_vol_ref = self._make_solar_vol_reference()
 
         try:
             optimal_sv, optimal_seq, success, cost, _weights = self.controller.solve(
                 current_temp=current_temp,
-                photo_ref_seq=photo_ref,
+                solar_vol_ref_seq=solar_vol_ref,
             )
         except Exception as exc:  # noqa: BLE001
             self._log_simple(f"MPPI 求解失败: {exc}")
@@ -303,7 +305,7 @@ class MPPIControlV2:
                     "pred_temp": None,
                     "pred_power": None,
                     "pred_pn": None,
-                    "target_pn": self.target_photo,
+                    "target_solar_vol": self.target_solar_vol,
                     "cost": None,
                     "success": False,
                     "note": "solve_failed",
@@ -338,7 +340,7 @@ class MPPIControlV2:
             print(f"🔴 红光PWM: {r_pwm:.2f} | 🔵 蓝光PWM: {b_pwm:.2f}")
             print(f"📈 预测温度: {next_temp:.2f} °C")
             print(f"⚡ 预测功率: {next_power:.2f} W")
-            print(f"🌱 预测光合速率: {next_pn:.3f} (目标: {self.target_photo:.3f})")
+            print(f"🌱 预测光合速率: {next_pn:.3f} (目标Solar Vol: {self.target_solar_vol:.3f})")
             print(f"💰 代价: {float(cost):.2f}")
 
         self._log_cycle(
@@ -353,7 +355,7 @@ class MPPIControlV2:
                 "pred_temp": next_temp,
                 "pred_power": next_power,
                 "pred_pn": next_pn,
-                "target_pn": self.target_photo,
+                "target_solar_vol": self.target_solar_vol,
                 "cost": float(cost),
                 "success": True,
                 "note": note or "ok",

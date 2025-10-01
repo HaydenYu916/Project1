@@ -450,7 +450,7 @@ class LEDMPPIController:
         self,
         u_seq: np.ndarray,
         current_temp: float,
-        photo_ref_seq: np.ndarray | None = None,
+        solar_vol_ref_seq: np.ndarray | None = None,
     ) -> float:
         #计算单个PWM序列的代价 - 通过参考跟踪最大化光合作用
         try:
@@ -461,13 +461,14 @@ class LEDMPPIController:
             cost = 0.0
             cost -= self.Q_photo * float(np.sum(photo_pred))
 
-            if photo_ref_seq is not None and len(photo_ref_seq) > 0 and self.Q_ref != 0.0:
-                ref = np.asarray(photo_ref_seq, dtype=float)
-                if ref.shape[0] < photo_pred.shape[0]:
-                    pad_len = photo_pred.shape[0] - ref.shape[0]
+            # Solar Vol 参考跟踪代价
+            if solar_vol_ref_seq is not None and len(solar_vol_ref_seq) > 0 and self.Q_ref != 0.0:
+                ref = np.asarray(solar_vol_ref_seq, dtype=float)
+                if ref.shape[0] < u_seq.shape[0]:
+                    pad_len = u_seq.shape[0] - ref.shape[0]
                     ref = np.pad(ref, (0, pad_len), mode="edge")
-                ref = ref[: photo_pred.shape[0]]
-                diff = photo_pred - ref
+                ref = ref[: u_seq.shape[0]]
+                diff = u_seq - ref
                 cost += self.Q_ref * float(np.sum(diff**2))
 
             over = np.maximum(0.0, temp_pred - self.temp_max)
@@ -491,7 +492,7 @@ class LEDMPPIController:
         self,
         current_temp: float,
         mean_sequence: np.ndarray | None = None,
-        photo_ref_seq: np.ndarray | None = None,
+        solar_vol_ref_seq: np.ndarray | None = None,
     ):
         if mean_sequence is None:
             base = 0.5 * self.u_max
@@ -500,7 +501,7 @@ class LEDMPPIController:
         samples = self._sample_control_sequences(mean_sequence)
         costs = np.array(
             [
-                self._compute_cost(samples[i], current_temp, photo_ref_seq)
+                self._compute_cost(samples[i], current_temp, solar_vol_ref_seq)
                 for i in range(self.num_samples)
             ],
             dtype=float,
