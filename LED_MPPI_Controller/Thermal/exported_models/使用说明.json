@@ -1,0 +1,26 @@
+{
+  "模型使用说明": {
+    "文件说明": {
+      "heating_mlp_model.pkl": "开灯阶段热力学约束MLP模型",
+      "heating_thermal_model.json": "开灯阶段纯热力学模型参数",
+      "cooling_mlp_model.pkl": "关灯阶段热力学约束MLP模型",
+      "cooling_thermal_model.json": "关灯阶段纯热力学模型参数"
+    },
+    "使用方法": {
+      "MLP模型": "使用pickle.load()加载，调用model.predict(time, a1_val)进行预测",
+      "纯热力学模型": "使用JSON文件中的参数，根据公式计算温度差"
+    },
+    "输入参数": {
+      "time": "时间数组（分钟）",
+      "a1_val": "Solar值数组（与time长度相同）"
+    },
+    "输出": "温度差数组（°C）",
+    "注意事项": [
+      "MLP模型需要安装scikit-learn",
+      "纯热力学模型只需要numpy",
+      "时间单位：分钟",
+      "温度单位：°C（温差）",
+      "Solar值范围：1.296-1.549"
+    ]
+  }
+}

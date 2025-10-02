@@ -1,0 +1,129 @@
+{
+  "model_type": "Improved Thermodynamic Constrained MLP Model - Cooling Phase",
+  "analysis_date": "2025-10-02T17:34:34.736994",
+  "model_info": {
+    "thermal_params": {
+      "K1_base": 3.3548987208209438,
+      "tau1": 15.743670217895502,
+      "K2_base": 5.318573214702604,
+      "tau2": 168.80851716294282,
+      "alpha_solar": 1.5105878683604992
+    },
+    "mlp_info": {
+      "hidden_layers": "(30, 20, 10)",
+      "activation": "relu",
+      "solver": "adam",
+      "alpha": 0.001,
+      "max_iter": 1000
+    }
+  },
+  "predictions_summary": {
+    "1.296": {
+      "solar_val": 1.296,
+      "thermal_constrained_initial": 6.591009064509429,
+      "thermal_constrained_final": -0.12605888484620942,
+      "thermal_only_initial": 7.310859621357368,
+      "thermal_only_final": 0.41926507848170813
+    },
+    "1.418": {
+      "solar_val": 1.418,
+      "thermal_constrained_initial": 9.045322410835668,
+      "thermal_constrained_final": -0.061458468760451135,
+      "thermal_only_initial": 8.909308682206156,
+      "thermal_only_final": 0.5109333508402673
+    },
+    "1.438": {
+      "solar_val": 1.438,
+      "thermal_constrained_initial": 9.833851084326517,
+      "thermal_constrained_final": 2.0376234081656577,
+      "thermal_only_initial": 9.1713495118535,
+      "thermal_only_final": 0.5259609364728179
+    },
+    "1.541": {
+      "solar_val": 1.541,
+      "thermal_constrained_initial": 10.718117975627854,
+      "thermal_constrained_final": 0.3060573425305593,
+      "thermal_only_initial": 10.520859784537313,
+      "thermal_only_final": 0.603353002480454
+    },
+    "1.549": {
+      "solar_val": 1.549,
+      "thermal_constrained_initial": 10.471657756922504,
+      "thermal_constrained_final": -0.39051680204000616,
+      "thermal_only_initial": 10.62567611639625,
+      "thermal_only_final": 0.6093640367334743
+    }
+  },
+  "performance_analysis": {
+    "1.296": {
+      "thermal_constrained": {
+        "r2_score": 0.9972612001798246,
+        "rmse": 0.08940162472320698
+      },
+      "thermal_only": {
+        "r2_score": 0.9941757777938697,
+        "rmse": 0.37491258713017084
+      },
+      "improvement": {
+        "r2_delta": 0.0030854223859548835,
+        "rmse_delta": 0.28551096240696383
+      }
+    },
+    "1.418": {
+      "thermal_constrained": {
+        "r2_score": 0.9984336379747243,
+        "rmse": 0.07857037064072202
+      },
+      "thermal_only": {
+        "r2_score": 0.9973570000064792,
+        "rmse": 0.4458037884215202
+      },
+      "improvement": {
+        "r2_delta": 0.0010766379682450866,
+        "rmse_delta": 0.36723341778079815
+      }
+    },
+    "1.438": {
+      "thermal_constrained": {
+        "r2_score": 0.9972717034063237,
+        "rmse": 0.08360651959489304
+      },
+      "thermal_only": {
+        "r2_score": 0.9951702896764235,
+        "rmse": 1.307942752929805
+      },
+      "improvement": {
+        "r2_delta": 0.0021014137299001368,
+        "rmse_delta": 1.2243362333349121
+      }
+    },
+    "1.541": {
+      "thermal_constrained": {
+        "r2_score": 0.9987288096039595,
+        "rmse": 0.08819368459307252
+      },
+      "thermal_only": {
+        "r2_score": 0.9984010008494425,
+        "rmse": 0.12010953712821033
+      },
+      "improvement": {
+        "r2_delta": 0.00032780875451698943,
+        "rmse_delta": 0.03191585253513782
+      }
+    },
+    "1.549": {
+      "thermal_constrained": {
+        "r2_score": 0.9986783167234216,
+        "rmse": 0.09447400864800234
+      },
+      "thermal_only": {
+        "r2_score": 0.9985038057872532,
+        "rmse": 0.6236325583218947
+      },
+      "improvement": {
+        "r2_delta": 0.00017451093616838165,
+        "rmse_delta": 0.5291585496738923
+      }
+    }
+  }
+}

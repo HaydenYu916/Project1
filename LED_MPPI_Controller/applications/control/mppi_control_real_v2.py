@@ -108,9 +108,8 @@ class MPPIControlV2:
         self.plant = LEDPlant(
             base_ambient_temp=25.0,
             max_solar_vol=2.0,
-            thermal_resistance=0.05,
-            time_constant_s=900.0,
-            thermal_mass=150.0,
+            thermal_model_type='thermal',  # 使用热力学模型
+            model_dir='../../Thermal/exported_models',  # 指定模型目录
             power_model=power_model,
             r_b_ratio=RB_RATIO,
             use_solar_vol_model=True,

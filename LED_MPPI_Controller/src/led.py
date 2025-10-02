@@ -9,393 +9,343 @@ from __future__ import annotations
 4. 前向步进接口 - MPPI 控制器使用的前向仿真
 """
 
-from dataclasses import dataclass
-from abc import ABC, abstractmethod
-import math
 import os
 import csv
+import math
 import re
+import sys
+from dataclasses import dataclass
 from typing import Iterable, Optional, Tuple, Dict, Callable, Sequence, List
 import numpy as np
 
+# 热力学模型相关导入
+import pickle
+import json
+import numpy as np
+from typing import Optional, Literal
 
 # =============================================================================
-# 模块 1: 默认参数与配置
+# 模块 1: 新版热力学模型系统（基于Thermal目录）
 # =============================================================================
-DEFAULT_BASE_AMBIENT_TEMP = 23.0     # 环境基准温度 (°C)
-DEFAULT_THERMAL_RESISTANCE = 0.05    # 热阻 (K/W)
-DEFAULT_TIME_CONSTANT_S = 7.5        # 一阶时间常数 (s)
-DEFAULT_THERMAL_MASS = 150.0         # 热容/热惯量占位 (J/°C)
 
-# 预留：光学/功率相关参数（当前热模型未使用，后续扩展）
-DEFAULT_MAX_PPFD = 600.0             # 最大PPFD (μmol/m²/s)
-DEFAULT_MAX_POWER = 140             # 最大功率 (W)
-DEFAULT_LED_EFFICIENCY = 0.8         # 基础光效 (0..1)
-DEFAULT_EFFICIENCY_DECAY = 2.0       # 效率衰减系数（随PWM上升衰减）
+# 默认参数
+DEFAULT_BASE_AMBIENT_TEMP = 25.0
+DEFAULT_THERMAL_RESISTANCE = 0.05
+DEFAULT_TIME_CONSTANT_S = 7.5
+DEFAULT_THERMAL_MASS = 150.0
+DEFAULT_MAX_PPFD = 200.0
+DEFAULT_MAX_POWER = 130.0
+DEFAULT_LED_EFFICIENCY = 0.8
+DEFAULT_EFFICIENCY_DECAY = 0.1
 
-
-# =============================================================================
-# 模块 2: 热力学模型
-# =============================================================================
-@dataclass
+@dataclass(frozen=True)
 class LedThermalParams:
-    """LED 物理参数集合
-
-    当前类用于热力学模型，但同时“保留”光学/功率相关参数，
-    便于后续在同一处集中管理参数与扩展模型。
-    """
-
-    # 热学参数
-    base_ambient_temp: float = 25.0
+    """LED热力学参数"""
+    base_ambient_temp: float = DEFAULT_BASE_AMBIENT_TEMP
     thermal_resistance: float = DEFAULT_THERMAL_RESISTANCE
     time_constant_s: float = DEFAULT_TIME_CONSTANT_S
     thermal_mass: float = DEFAULT_THERMAL_MASS
-
-    # 预留：光学/功率参数（当前热模型未使用）
     max_ppfd: float = DEFAULT_MAX_PPFD
     max_power: float = DEFAULT_MAX_POWER
     led_efficiency: float = DEFAULT_LED_EFFICIENCY
     efficiency_decay: float = DEFAULT_EFFICIENCY_DECAY
+    model_type: Literal["mlp", "thermal"] = "thermal"
+    model_dir: str = "../Thermal/exported_models"
+    solar_threshold: float = 1.4  # Solar值阈值，用于判断升温/降温
 
-
-class BaseThermalModel(ABC):
-    """热力学模型抽象基类（仅热学，不含PWM/功耗/PPFD）。"""
-
-    params: LedThermalParams
-    ambient_temp: float
-
-    @abstractmethod
-    def reset(self, ambient_temp: float | None = None) -> None:  # pragma: no cover - interface
-        pass
-
-    @abstractmethod
-    def target_temperature(self, heat_power_w: float) -> float:  # pragma: no cover - interface
-        pass
-
-    @abstractmethod
-    def step(self, heat_power_w: float, dt: float) -> float:  # pragma: no cover - interface
-        pass
-
-
-class FirstOrderThermalModel(BaseThermalModel):
-    """一阶 LED 热力学模型
-
-    该模型只负责温度动态：在给定发热功率 heat_power_w 时，
-    环境温度向目标温度收敛：
-
-        target = base_ambient + heat_power_w * thermal_resistance
-        new_T  = T + alpha * (target - T),  alpha = clip(dt / tau, 0..1)
-    """
-
-    def __init__(self, params: LedThermalParams | None = None, *, initial_temp: float | None = None) -> None:
-        self.params = params or LedThermalParams()
-        self.ambient_temp: float = (
-            float(initial_temp)
-            if initial_temp is not None
-            else float(self.params.base_ambient_temp)
-        )
-
-    @staticmethod
-    def _clip(x: float, lo: float, hi: float) -> float:
-        return lo if x < lo else hi if x > hi else x
-
-    def reset(self, ambient_temp: float | None = None) -> None:
-        """重置当前环境温度状态。"""
-        if ambient_temp is None:
-            self.ambient_temp = float(self.params.base_ambient_temp)
+class ThermalModelManager:
+    """热力学模型管理器 - 管理MLP和纯热力学模型"""
+    
+    def __init__(self, params: LedThermalParams):
+        self.params = params
+        self.model_dir = params.model_dir
+        self.model_type = params.model_type
+        self.solar_threshold = params.solar_threshold
+        
+        # 模型缓存
+        self._heating_mlp_model = None
+        self._cooling_mlp_model = None
+        self._heating_thermal_params = None
+        self._cooling_thermal_params = None
+        
+        # 当前状态
+        self.current_temp = params.base_ambient_temp
+        self.current_solar = params.solar_threshold
+        
+        # 时间累积状态
+        self.elapsed_time_minutes = 0.0
+        self.last_phase = None  # 'heating' or 'cooling'
+        
+        # 加载模型
+        self._load_models()
+    
+    def _load_models(self):
+        """加载所有模型"""
+        try:
+            if self.model_type == "mlp":
+                # 尝试加载MLP模型
+                try:
+                    # 添加Thermal目录到路径以支持MLP类导入
+                    thermal_dir = os.path.join(os.path.dirname(__file__), '..', 'Thermal')
+                    if thermal_dir not in sys.path:
+                        sys.path.insert(0, thermal_dir)
+                    
+                    # 动态导入MLP类并注册到全局命名空间
+                    import importlib.util
+                    
+                    # 导入heating模块
+                    heating_spec = importlib.util.spec_from_file_location(
+                        'heating_module', 
+                        os.path.join(thermal_dir, '22-improved_thermal_constrained_mlp_heating.py')
+                    )
+                    heating_module = importlib.util.module_from_spec(heating_spec)
+                    heating_spec.loader.exec_module(heating_module)
+                    
+                    # 导入cooling模块
+                    cooling_spec = importlib.util.spec_from_file_location(
+                        'cooling_module', 
+                        os.path.join(thermal_dir, '20-improved_thermal_constrained_mlp_cooling.py')
+                    )
+                    cooling_module = importlib.util.module_from_spec(cooling_spec)
+                    cooling_spec.loader.exec_module(cooling_module)
+                    
+                    # 创建自定义unpickler来处理类定义问题
+                    class CustomUnpickler(pickle.Unpickler):
+                        def find_class(self, module, name):
+                            if name == 'ImprovedThermodynamicConstrainedMLPHeating':
+                                return heating_module.ImprovedThermodynamicConstrainedMLPHeating
+                            elif name == 'ImprovedThermodynamicConstrainedMLPCooling':
+                                return cooling_module.ImprovedThermodynamicConstrainedMLPCooling
+                            return super().find_class(module, name)
+                    
+                    # 加载MLP模型
+                    heating_path = os.path.join(self.model_dir, "heating_mlp_model.pkl")
+                    cooling_path = os.path.join(self.model_dir, "cooling_mlp_model.pkl")
+                    
+                    with open(heating_path, 'rb') as f:
+                        self._heating_mlp_model = CustomUnpickler(f).load()
+                    with open(cooling_path, 'rb') as f:
+                        self._cooling_mlp_model = CustomUnpickler(f).load()
+                    
+                    print("✅ MLP模型加载成功")
+                        
+                except Exception as mlp_error:
+                    print(f"警告: MLP模型加载失败 ({mlp_error})，回退到纯热力学模型")
+                    self.model_type = "thermal"
+                    
+            # 加载纯热力学模型参数
+            heating_thermal_path = os.path.join(self.model_dir, "heating_thermal_model.json")
+            cooling_thermal_path = os.path.join(self.model_dir, "cooling_thermal_model.json")
+            
+            with open(heating_thermal_path, 'r', encoding='utf-8') as f:
+                self._heating_thermal_params = json.load(f)
+            with open(cooling_thermal_path, 'r', encoding='utf-8') as f:
+                self._cooling_thermal_params = json.load(f)
+                
+        except Exception as e:
+            raise RuntimeError(f"加载热力学模型失败: {e}")
+    
+    def _is_heating_phase(self, solar_val: float) -> bool:
+        """判断是否为升温阶段"""
+        return solar_val > self.solar_threshold
+    
+    def _predict_mlp(self, time_minutes: float, solar_val: float, is_heating: bool) -> float:
+        """使用MLP模型预测温度差"""
+        model = self._heating_mlp_model if is_heating else self._cooling_mlp_model
+        if model is None:
+            raise RuntimeError(f"{'升温' if is_heating else '降温'}MLP模型未加载")
+        
+        # MLP模型需要时间数组和Solar值数组
+        time_array = np.array([time_minutes])
+        solar_array = np.array([solar_val])
+        
+        delta_temp = model.predict(time_array, solar_array)[0]
+        return float(delta_temp)
+    
+    def _predict_thermal(self, time_minutes: float, solar_val: float, is_heating: bool) -> float:
+        """使用纯热力学模型预测温度差"""
+        params = self._heating_thermal_params if is_heating else self._cooling_thermal_params
+        if params is None:
+            raise RuntimeError(f"{'升温' if is_heating else '降温'}热力学模型参数未加载")
+        
+        # 提取参数
+        K1_base = params['parameters']['K1_base']
+        tau1 = params['parameters']['tau1']
+        K2_base = params['parameters']['K2_base']
+        tau2 = params['parameters']['tau2']
+        alpha_solar = params['parameters']['alpha_solar']
+        a1_ref = params['a1_ref']
+        
+        # Solar修正因子
+        solar_factor = 1 + alpha_solar * (solar_val - a1_ref)
+        K1_solar = K1_base * solar_factor
+        K2_solar = K2_base * solar_factor
+        
+        # 计算温度差
+        t = time_minutes
+        if is_heating:
+            # 升温公式: ΔT(t) = K1 × (1 - exp(-t/τ1)) + K2 × (1 - exp(-t/τ2))
+            delta_temp = K1_solar * (1 - np.exp(-t / tau1)) + K2_solar * (1 - np.exp(-t / tau2))
         else:
-            self.ambient_temp = float(ambient_temp)
-
+            # 降温公式: ΔT(t) = K1 × exp(-t/τ1) + K2 × exp(-t/τ2)
+            delta_temp = K1_solar * np.exp(-t / tau1) + K2_solar * np.exp(-t / tau2)
+        
+        return float(delta_temp)
+    
+    def step(self, power: float, dt: float, solar_vol: Optional[float] = None, control_change: Optional[float] = None) -> float:
+        """热力学步进 - 支持基于控制量变化判断升温/降温"""
+        # 使用Solar Vol或默认值
+        solar_val = solar_vol if solar_vol is not None else self.current_solar
+        
+        # 🔥 基于控制量变化判断升温/降温阶段
+        if control_change is not None:
+            # MPPI控制量变化: u0 - u1
+            is_heating = control_change > 0  # 控制量增加 → 升温
+        else:
+            # 回退到Solar值判断
+            is_heating = self._is_heating_phase(solar_val)
+        
+        # 转换时间单位（秒转分钟）
+        dt_minutes = dt / 60.0
+        
+        # 检查Solar电压或阶段是否改变
+        current_phase = 'heating' if is_heating else 'cooling'
+        solar_changed = abs(solar_val - self.current_solar) > 1e-6
+        phase_changed = self.last_phase != current_phase
+        
+        if solar_changed or phase_changed:
+            # Solar电压或阶段改变，重置时间累积
+            self.elapsed_time_minutes = 0.0
+            self.last_phase = current_phase
+        
+        # 计算累积时间
+        self.elapsed_time_minutes += dt_minutes
+        
+        # 预测温度差（基于累积时间）
+        if self.model_type == "mlp":
+            delta_temp = self._predict_mlp(self.elapsed_time_minutes, solar_val, is_heating)
+        else:
+            delta_temp = self._predict_thermal(self.elapsed_time_minutes, solar_val, is_heating)
+        
+        # 更新温度（热力学模型预测的是相对于环境温度的温差）
+        ambient_temp = self.params.base_ambient_temp
+        new_temp = ambient_temp + delta_temp
+        
+        # 更新状态
+        self.current_temp = new_temp
+        self.current_solar = solar_val
+        
+        return new_temp
+    
+    def reset(self, ambient_temp: Optional[float] = None):
+        """重置模型状态"""
+        self.current_temp = ambient_temp if ambient_temp is not None else self.params.base_ambient_temp
+        self.current_solar = self.solar_threshold
+        # 重置时间累积状态
+        self.elapsed_time_minutes = 0.0
+        self.last_phase = None
+    
+    @property
+    def ambient_temp(self) -> float:
+        return self.current_temp
+    
+    @ambient_temp.setter
+    def ambient_temp(self, value: float):
+        self.current_temp = float(value)
+    
+    @property
+    def supports_solar_input(self) -> bool:
+        return True
+    
     def target_temperature(self, power: float) -> float:
-        """在给定发热功率下的目标温度（稳态）。"""
-        return float(self.params.base_ambient_temp + float(power) * self.params.thermal_resistance)
-
-    def step(self, power: float, dt: float) -> float:
-        """前进一步，返回新的环境温度。
-
-        仅进行热学计算，不涉及 PWM、功耗、PPFD 等。
-        """
-        if not (math.isfinite(power) and math.isfinite(dt)):
-            raise ValueError("power/dt 必须为有限实数")
-        if dt <= 0:
-            raise ValueError("dt 必须为正数")
-
-        tau = max(float(self.params.time_constant_s), 1e-6)
-        # 指数离散化：alpha = 1 - exp(-dt/tau)，更符合连续一阶惯性离散化
-        alpha = 1.0 - math.exp(-float(dt) / tau)
-
-        target = self.target_temperature(float(power))
-        self.ambient_temp = float(self.ambient_temp + alpha * (target - self.ambient_temp))
-        return self.ambient_temp
-
-
-class SecondOrderThermalModel(BaseThermalModel):
-    """二阶热力学模型示例：引入内部温度状态。"""
-
-    def __init__(self, params: LedThermalParams | None = None, *, initial_temp: float | None = None) -> None:
-        self.params = params or LedThermalParams()
-        base = float(initial_temp) if initial_temp is not None else float(self.params.base_ambient_temp)
-        self.ambient_temp: float = base
-        self._internal_temp: float = base
-
-    @staticmethod
-    def _clip(x: float, lo: float, hi: float) -> float:
-        return lo if x < lo else hi if x > hi else x
-
-    def reset(self, ambient_temp: float | None = None) -> None:
-        base = float(self.params.base_ambient_temp) if ambient_temp is None else float(ambient_temp)
-        self.ambient_temp = base
-        self._internal_temp = base
-
-    def target_temperature(self, power: float) -> float:
-        return float(self.params.base_ambient_temp + float(power) * self.params.thermal_resistance)
-
-    def step(self, power: float, dt: float) -> float:
-        if not (math.isfinite(power) and math.isfinite(dt)):
-            raise ValueError("power/dt 必须为有限实数")
-        if dt <= 0:
-            raise ValueError("dt 必须为正数")
-
-        # 目标内部温度由发热决定
-        target_internal = self.target_temperature(float(power))
-
-        # 定义两个时间常数（可调比例)
-        tau_internal = max(float(self.params.time_constant_s) * 0.5, 1e-6)
-        tau_ambient = max(float(self.params.time_constant_s) * 2.0, 1e-6)
-
-        a_int = self._clip(float(dt) / tau_internal, 0.0, 1.0)
-        a_amb = self._clip(float(dt) / tau_ambient, 0.0, 1.0)
-
-        # 先更新内部温度，再驱动环境温度
-        self._internal_temp = float(self._internal_temp + a_int * (target_internal - self._internal_temp))
-        self.ambient_temp = float(self.ambient_temp + a_amb * (self._internal_temp - self.ambient_temp))
-        return self.ambient_temp
-
-
-@dataclass(frozen=True)
-class UnifiedPPFDParams:
-    k1_a: float = 0.013198      # K1(u) = k1_a * u + k1_b
-    k1_b: float = 0.493192
-    t1_a: float = 0.009952      # tau1(u) = t1_a * u + t1_b
-    t1_b: float = 0.991167
-    k2_a: float = 0.013766      # K2(u) = k2_a * u**k2_p
-    k2_p: float = 0.988656
-    t2_a: float = 0.796845      # tau2(u) = t2_a * u**t2_p
-    t2_p: float = -0.144439
-
-
-def unified_temp_diff_model(t: float, input_value: float, p: UnifiedPPFDParams) -> float:
-    """纯函数：给定时间 t 与输入量 u，返回温度差 ΔT。"""
-    u = float(max(0.0, input_value))
-    if u <= 0.0:
-        return 0.0
-    k1 = p.k1_a * u + p.k1_b
-    tau1 = max(p.t1_a * u + p.t1_b, 1e-6)
-    k2 = p.k2_a * (u ** p.k2_p)
-    tau2 = max(p.t2_a * (u ** p.t2_p), 1e-6)
-    return float(k1 * (1.0 - math.exp(-float(t) / tau1)) + k2 * (1.0 - math.exp(-float(t) / tau2)))
-
-
-def _unified_steady_delta(input_value: float, p: UnifiedPPFDParams) -> float:
-    """稳态温差 ΔT∞(u)。
-
-    给定输入量 u（如 PPFD 或 Solar_Vol），返回长时间后达到的温差：
-        ΔT∞(u) = K1(u) + K2(u)
-    """
-    u = float(max(0.0, input_value))
-    if u <= 0.0:
-        return 0.0
-    k1 = p.k1_a * u + p.k1_b
-    k2 = p.k2_a * (u ** p.k2_p)
-    return float(k1 + k2)
-
-
-class UnifiedPPFDThermalModel(BaseThermalModel):
-    """统一PPFD热力学模型（函数式核心 + 面向对象外壳）
-
-    温度差统一模型（函数式）：
-        ΔT(t, u) = K1(u) * (1 - exp(-t/tau1(u))) + K2(u) * (1 - exp(-t/tau2(u)))
-    其中 u 为输入量（默认按 PPFD；5:1 情况可用 Solar_Vol 数值代入）。
-
-    质量：R²≈0.9254, MAE≈0.4654°C, RMSE≈0.6077°C。
-    """
-
-    def __init__(self, params: LedThermalParams | None = None, *, initial_temp: float | None = None, model_params: UnifiedPPFDParams | None = None) -> None:
-        self.params = params or LedThermalParams()
-        self.ambient_temp: float = (
-            float(initial_temp)
-            if initial_temp is not None
-            else float(self.params.base_ambient_temp)
-        )
-        self._time_elapsed: float = 0.0
-        self._current_ppfd: float = 0.0
-        self._eps_input: float = 1e-9  # 输入变化阈值；超过则视为新阶跃
-        self._mp: UnifiedPPFDParams = model_params or UnifiedPPFDParams()
-
-    def reset(self, ambient_temp: float | None = None) -> None:
-        """重置温度状态和时间累计"""
-        if ambient_temp is None:
-            self.ambient_temp = float(self.params.base_ambient_temp)
+        """目标温度（简化计算）"""
+        return self.params.base_ambient_temp + power * self.params.thermal_resistance
+    
+    def target_temperature_solar(self, solar_vol: float) -> float:
+        """基于Solar Vol的目标温度"""
+        is_heating = self._is_heating_phase(solar_vol)
+        # 使用稳态温度差作为目标
+        if self.model_type == "mlp":
+            delta_temp = self._predict_mlp(1000.0, solar_vol, is_heating)  # 长时间预测
         else:
-            self.ambient_temp = float(ambient_temp)
-        self._time_elapsed = 0.0
-        self._current_ppfd = 0.0
-
-    def target_temperature(self, ppfd: float) -> float:
-        """稳态温度：环境基准温度 + ΔT∞(u)。"""
-        ppfd_val = float(ppfd)
-        delta_t_steady = _unified_steady_delta(ppfd_val, self._mp)
-        return float(self.params.base_ambient_temp + delta_t_steady)
-
-    def step(self, ppfd: float, dt: float) -> float:
-        """前进一步，返回新的环境温度
+            delta_temp = self._predict_thermal(1000.0, solar_vol, is_heating)
         
-        参数:
-            ppfd: 当前输入量（常规为PPFD；在5:1场景可直接传入Solar_Vol）
-            dt: 时间步长 (s)
-        """
-        if not (math.isfinite(ppfd) and math.isfinite(dt)):
-            raise ValueError("ppfd/dt 必须为有限实数")
-        if dt <= 0:
-            raise ValueError("dt 必须为正数")
-
-        ppfd_val = float(ppfd)
-        dt_val = float(dt)
-        
-        # 输入变化检测：若变化超过阈值，视为新的阶跃，时间归零
-        if abs(ppfd_val - self._current_ppfd) > self._eps_input:
-            self._time_elapsed = 0.0
-            self._current_ppfd = ppfd_val
+        if is_heating:
+            return self.params.base_ambient_temp + delta_temp
         else:
-            self._time_elapsed += dt_val
-        
-        if ppfd_val <= 0:
-            # PPFD为0时，温度向环境温度衰减
-            tau_decay = 10.0  # 衰减时间常数
-            alpha = 1.0 - math.exp(-dt_val / tau_decay)
-            self.ambient_temp = float(self.ambient_temp + alpha * (self.params.base_ambient_temp - self.ambient_temp))
-            return self.ambient_temp
-        
-        # 计算当前时刻的温度差（调用纯函数）
-        delta_t = unified_temp_diff_model(self._time_elapsed, ppfd_val, self._mp)
-        
-        # 更新环境温度
-        self.ambient_temp = float(self.params.base_ambient_temp + delta_t)
-        
-        return self.ambient_temp
+            return self.params.base_ambient_temp - delta_temp
 
-    def get_model_info(self) -> Dict[str, float]:
-        """获取当前模型状态信息"""
-        return {
-            'time_elapsed': self._time_elapsed,
-            'current_ppfd': self._current_ppfd,        # 兼容字段
-            'current_solar_vol': self._current_ppfd,   # 电压输入时更直观的命名
-            'ambient_temp': self.ambient_temp,
-            'base_ambient_temp': self.params.base_ambient_temp
-        }
+# 兼容性别名
+BaseThermalModel = ThermalModelManager
+FirstOrderThermalModel = ThermalModelManager
+LedThermalModel = ThermalModelManager
 
-    # --- 便捷别名（当输入为 Solar_Vol 时可直接调用） ---
-    def step_with_solar_vol(self, solar_vol: float, dt: float) -> float:
-        return self.step(solar_vol, dt)
-
-    def target_temperature_solar_vol(self, solar_vol: float) -> float:
-        return self.target_temperature(solar_vol)
-
-
-# 兼容命名：保持 LedThermalModel 为一阶模型别名，便于外部直接使用
-LedThermalModel = FirstOrderThermalModel
-
-
-# =============================================================================
-# 模块 3: LED 外观封装
-# =============================================================================
 class Led:
-    """LED 外观封装（支持热学和PPFD模型）。
-
-    - 统一管理 `params` 与 `model` 的组合
-    - 面向业务的最小接口：reset / step_with_heat / step_with_ppfd / target_temperature / get_temperature
-    - 支持传统热学模型和新的统一PPFD模型
-    """
-
-    def __init__(
-        self,
-        model_type: str = "first_order",
-        params: LedThermalParams | None = None,
-        *,
-        initial_temp: float | None = None,
-    ) -> None:
-        self.params = params or LedThermalParams()
-        self.model: BaseThermalModel = create_model(model_type, self.params, initial_temp=initial_temp)
-        self._is_ppfd_model = isinstance(self.model, UnifiedPPFDThermalModel)
-
-    def reset(self, ambient_temp: float | None = None) -> None:
+    """LED封装类"""
+    
+    def __init__(self, model_type: str = "thermal", params: Optional[LedThermalParams] = None):
+        if params is None:
+            params_obj = LedThermalParams(model_type=model_type)
+        else:
+            # 创建新的参数对象以避免冻结问题
+            params_obj = LedThermalParams(
+                base_ambient_temp=params.base_ambient_temp,
+                thermal_resistance=params.thermal_resistance,
+                time_constant_s=params.time_constant_s,
+                thermal_mass=params.thermal_mass,
+                max_ppfd=params.max_ppfd,
+                max_power=params.max_power,
+                led_efficiency=params.led_efficiency,
+                efficiency_decay=params.efficiency_decay,
+                model_type=model_type,
+                model_dir=params.model_dir,
+                solar_threshold=params.solar_threshold
+            )
+        self.params = params_obj
+        self.model = ThermalModelManager(params_obj)
+    
+    def reset(self, ambient_temp: Optional[float] = None):
         self.model.reset(ambient_temp)
-
+    
     def step_with_heat(self, power: float, dt: float) -> float:
-        """传统热学步进：使用发热功率"""
-        if self._is_ppfd_model:
-            raise ValueError("统一PPFD模型不支持step_with_heat，请使用step_with_ppfd")
-        return self.model.step(power, dt)
-
-    def step_with_ppfd(self, ppfd: float, dt: float) -> float:
-        """PPFD步进：使用PPFD值（仅统一PPFD模型支持）"""
-        if not self._is_ppfd_model:
-            raise ValueError("非PPFD模型不支持step_with_ppfd，请使用step_with_heat")
-        return self.model.step(ppfd, dt)
-
-    def target_temperature(self, input_val: float) -> float:
-        """计算目标温度
-        
-        参数:
-            input_val: 对于传统模型为发热功率(W)，对于PPFD模型为PPFD值(μmol/m²/s)
-        """
-        return self.model.target_temperature(input_val)
-
+        return self.model.step(power=power, dt=dt)
+    
+    def step_with_solar(self, solar_vol: float, dt: float) -> float:
+        return self.model.step(power=0.0, dt=dt, solar_vol=solar_vol)
+    
+    def target_temperature(self, power: float) -> float:
+        return self.model.target_temperature(power)
+    
+    def target_temperature_solar(self, solar_vol: float) -> float:
+        return self.model.target_temperature_solar(solar_vol)
+    
     @property
     def temperature(self) -> float:
-        """当前模型维护的环境温度（°C）。"""
         return self.model.ambient_temp
-
+    
     @property
-    def is_ppfd_model(self) -> bool:
-        """是否为PPFD模型"""
-        return self._is_ppfd_model
+    def supports_solar_input(self) -> bool:
+        return self.model.supports_solar_input
+    
+    def get_model_info(self) -> dict:
+        return {
+            "model_type": self.params.model_type,
+            "solar_threshold": self.params.solar_threshold,
+            "base_ambient_temp": self.params.base_ambient_temp
+        }
 
-    def get_model_info(self) -> Dict[str, float]:
-        """获取模型状态信息（仅PPFD模型支持）"""
-        if hasattr(self.model, 'get_model_info'):
-            return self.model.get_model_info()
-        else:
-            return {
-                'ambient_temp': self.model.ambient_temp,
-                'base_ambient_temp': self.params.base_ambient_temp
-            }
+def create_model(model_type: str = "thermal", params: Optional[LedThermalParams] = None) -> ThermalModelManager:
+    """创建热力学模型"""
+    params_obj = params or LedThermalParams()
+    params_obj.model_type = model_type
+    return ThermalModelManager(params_obj)
 
-
-def create_model(
-    model_type: str = "first_order",
-    params: LedThermalParams | None = None,
-    *,
-    initial_temp: float | None = None,
-) -> BaseThermalModel:
-    """模型工厂：创建指定类型的热学模型。"""
-    params = params or LedThermalParams()
-    mt = model_type.lower().strip()
-    if mt in {"first_order", "first", "1", "fo"}:
-        return FirstOrderThermalModel(params, initial_temp=initial_temp)
-    if mt in {"second_order", "second", "2", "so"}:
-        return SecondOrderThermalModel(params, initial_temp=initial_temp)
-    if mt in {"unified_ppfd", "ppfd", "unified", "3", "up"}:
-        return UnifiedPPFDThermalModel(params, initial_temp=initial_temp)
-    raise ValueError(f"不支持的模型类型: {model_type}")
 def create_default_params() -> LedThermalParams:
-    """便捷函数：创建默认热学参数。"""
+    """创建默认参数"""
     return LedThermalParams()
 
-
-# 为了向后使用者方便，可以导出一个通用别名（可选）
+# 兼容性别名
 LedParams = LedThermalParams
-
 
 # =============================================================================
 # 模块 4: PWM-PPFD 转换系统（重构版本）
@@ -1223,15 +1173,13 @@ def forward_step(
     use_efficiency: bool = False,
     eta_model: Optional[Callable[[float, float, float, float, LedThermalParams], float]] = None,
     heat_scale: float = 1.0,
-    use_unified_ppfd: bool = False,  # 是否使用统一PPFD模型
-    use_solar_vol_for_5_1: bool = False,  # 在5:1场景下以Solar_Vol替代PPFD
+    use_solar_vol_for_5_1: bool = False,  # 在5:1场景下以Solar_Vol替代PPFD并驱动热模型
 ) -> LedForwardOutput:
     """统一的前向一步接口：PWM → 功率/PPFD → 热功率 → 温度。
 
     - 不依赖效率模型即可使用：默认 p_heat = heat_scale * p_elec（建议 heat_scale=1 或 0.6~0.8）
     - 若 use_efficiency=True，需提供 eta_model(r,b,total, temp, params) → η，热功率 p_heat = p_elec*(1-η)
     - model_key: None 或 "overall" 走整体模型；传 "5:1" 等则使用对应比例键
-    - use_unified_ppfd: 是否使用统一PPFD模型（需要ppfd_model支持）
     """
     # 1) 裁剪 PWM 到 0..100
     r = max(0.0, min(100.0, float(r_pwm)))
@@ -1252,24 +1200,32 @@ def forward_step(
             ppfd_val = float(ppfd_model.predict(r_pwm=r, b_pwm=b, key=key_arg))
 
     # 4) 热学步进 - 根据模型类型选择不同方式
-    if use_unified_ppfd and isinstance(thermal_model, UnifiedPPFDThermalModel):
-        if ppfd_val is None:
-            raise ValueError("使用统一PPFD模型需要提供ppfd_model")
-        new_temp = float(thermal_model.step(ppfd=ppfd_val, dt=float(dt)))
-        # 统一PPFD模型不计算热功率，设为0
-        p_heat = 0.0
-        eff_val = None
+    eff_val: Optional[float] = None
+    if use_efficiency:
+        if eta_model is None:
+            raise ValueError("use_efficiency=True 需要提供 eta_model 回调")
+        eff_val = float(
+            max(
+                0.0,
+                min(1.0, eta_model(r, b, total, thermal_model.ambient_temp, thermal_model.params)),
+            )
+        )
+        p_heat = p_elec * (1.0 - eff_val)
     else:
-        # 传统热学模型：计算热功率
-        eff_val: Optional[float] = None
-        if use_efficiency:
-            if eta_model is None:
-                raise ValueError("use_efficiency=True 需要提供 eta_model 回调")
-            eff_val = float(max(0.0, min(1.0, eta_model(r, b, total, thermal_model.ambient_temp, thermal_model.params))))
-            p_heat = p_elec * (1.0 - eff_val)
-        else:
-            p_heat = p_elec * float(heat_scale)
-        
+        p_heat = p_elec * float(heat_scale)
+
+    solar_for_thermal: Optional[float] = None
+    if (
+        getattr(thermal_model, "supports_solar_input", False)
+        and use_solar_vol_for_5_1
+        and ppfd_val is not None
+        and (key_arg is None or str(key_arg) == "5:1")
+    ):
+        solar_for_thermal = float(ppfd_val)
+
+    if solar_for_thermal is not None:
+        new_temp = float(thermal_model.step(power=p_heat, dt=float(dt), solar_vol=solar_for_thermal))
+    else:
         new_temp = float(thermal_model.step(power=p_heat, dt=float(dt)))
 
     return LedForwardOutput(
@@ -1296,107 +1252,31 @@ def forward_step_batch(
     use_efficiency: bool = False,
     eta_model: Optional[Callable[[float, float, float, float, LedThermalParams], float]] = None,
     heat_scale: float = 1.0,
-    use_unified_ppfd: bool = False,  # 是否使用统一PPFD模型
     use_solar_vol_for_5_1: bool = False,  # 在5:1场景下以Solar_Vol替代PPFD
 ) -> List[LedForwardOutput]:
-    """批量前向步进：NumPy 向量化电功率/PPFD/热功率，热学更新逐实例写回。"""
-    n = len(thermal_models)
-    r = np.clip(np.asarray(r_pwms, dtype=float), 0.0, 100.0)
-    b = np.clip(np.asarray(b_pwms, dtype=float), 0.0, 100.0)
-    if r.shape != b.shape or r.ndim != 1 or r.size != n:
-        raise ValueError("r_pwms/b_pwms 形状必须为 (N,) 且与 thermal_models 数量一致")
+    """批量前向步进（逐实例调用 forward_step，便于复用最新热模型逻辑）。"""
 
-    total = r + b
+    if len(r_pwms) != len(b_pwms) or len(r_pwms) != len(thermal_models):
+        raise ValueError("thermal_models、r_pwms、b_pwms 长度必须一致")
 
-    # 选择模型键（整体或指定比例）
-    key_arg = None if (model_key is None or str(model_key).lower() == "overall") else model_key
-
-    # 向量化电功率：P = a*total + c
-    line = power_model.overall if key_arg is None else power_model.by_key.get(_normalize_key(key_arg), power_model.overall)
-    if line is None:
-        raise RuntimeError("power_model 未拟合或缺少系数")
-    p_elec = line.a * total + line.c
-
-    # 向量化 PPFD（如提供）
-    if ppfd_model is not None:
-        coeffs = ppfd_model.overall if key_arg is None else ppfd_model.by_key.get(_normalize_key(key_arg), ppfd_model.overall)
-        if coeffs is None:
-            raise RuntimeError("ppfd_model 未拟合或缺少系数")
-        ppfd_vals = coeffs.a_r * r + coeffs.a_b * b + coeffs.intercept
-        if use_solar_vol_for_5_1 and (key_arg is None or str(key_arg) == "5:1"):
-            # 5:1 时使用相同线性形式承载 Solar_Vol 值
-            pass
-    else:
-        ppfd_vals = np.full(n, np.nan)
-
-    # 检查是否有统一PPFD模型
-    has_unified_ppfd = any(isinstance(m, UnifiedPPFDThermalModel) for m in thermal_models)
-    
-    if use_unified_ppfd and has_unified_ppfd:
-        # 统一PPFD模型：直接使用PPFD进行热学更新
-        if ppfd_model is None:
-            raise ValueError("使用统一PPFD模型需要提供ppfd_model")
-        
-        new_temps = np.empty(n, dtype=float)
-        p_heat = np.zeros(n, dtype=float)  # 统一PPFD模型不计算热功率
-        eff_list = np.full(n, np.nan)
-        
-        # 逐实例更新（因为每个模型可能有不同的累计时间）
-        for i, m in enumerate(thermal_models):
-            if isinstance(m, UnifiedPPFDThermalModel):
-                new_temps[i] = float(m.step(ppfd=float(ppfd_vals[i]), dt=float(dt)))
-            else:
-                # 混合模型：传统模型仍使用热功率
-                if use_efficiency and eta_model is not None:
-                    eff_val = float(max(0.0, min(1.0, eta_model(float(r[i]), float(b[i]), float(total[i]), float(m.ambient_temp), m.params))))
-                    p_heat[i] = p_elec[i] * (1.0 - eff_val)
-                    eff_list[i] = eff_val
-                else:
-                    p_heat[i] = p_elec[i] * float(heat_scale)
-                new_temps[i] = float(m.step(power=p_heat[i], dt=float(dt)))
-    else:
-        # 传统热学模型：计算热功率
-        if use_efficiency:
-            if eta_model is None:
-                raise ValueError("use_efficiency=True 需要提供 eta_model 回调")
-            # 逐实例计算效率（依赖温度和参数），此处循环
-            eff_list = np.empty(n, dtype=float)
-            for i in range(n):
-                eff_list[i] = float(max(0.0, min(1.0, eta_model(float(r[i]), float(b[i]), float(total[i]), float(thermal_models[i].ambient_temp), thermal_models[i].params))))
-            p_heat = p_elec * (1.0 - eff_list)
-        else:
-            eff_list = np.full(n, np.nan)
-            p_heat = p_elec * float(heat_scale)
-
-        # 向量化热学更新（读取参数与状态，批量计算，再写回）
-        temps = np.array([m.ambient_temp for m in thermal_models], dtype=float)
-        base = np.array([m.params.base_ambient_temp for m in thermal_models], dtype=float)
-        rth = np.array([m.params.thermal_resistance for m in thermal_models], dtype=float)
-        tau = np.maximum(np.array([m.params.time_constant_s for m in thermal_models], dtype=float), 1e-6)
-        # 指数离散化 alpha = 1 - exp(-dt/tau)
-        alpha = 1.0 - np.exp(-float(dt) / tau)
-        target = base + p_heat * rth
-        new_temps = temps + alpha * (target - temps)
-
-        # 写回模型状态
-        for i, m in enumerate(thermal_models):
-            m.ambient_temp = float(new_temps[i])
-
-    # 组装输出列表
     outputs: List[LedForwardOutput] = []
-    for i in range(n):
+    for model, r_pwm, b_pwm in zip(thermal_models, r_pwms, b_pwms):
         outputs.append(
-            LedForwardOutput(
-                temp=float(new_temps[i]),
-                ppfd=None if np.isnan(ppfd_vals[i]) else float(ppfd_vals[i]),
-                power=float(p_elec[i]),
-                heat_power=float(p_heat[i]),
-                efficiency=None if np.isnan(eff_list[i]) else float(eff_list[i]),
-                r_pwm=float(r[i]),
-                b_pwm=float(b[i]),
-                total_pwm=float(total[i]),
+            forward_step(
+                thermal_model=model,
+                r_pwm=r_pwm,
+                b_pwm=b_pwm,
+                dt=dt,
+                power_model=power_model,
+                ppfd_model=ppfd_model,
+                model_key=model_key,
+                use_efficiency=use_efficiency,
+                eta_model=eta_model,
+                heat_scale=heat_scale,
+                use_solar_vol_for_5_1=use_solar_vol_for_5_1,
             )
         )
+
     return outputs
 
 
@@ -1408,8 +1288,6 @@ __all__ = [
     "LedThermalParams",
     "BaseThermalModel",
     "FirstOrderThermalModel",
-    "SecondOrderThermalModel",
-    "UnifiedPPFDThermalModel",  # 新增统一PPFD模型
     "LedThermalModel",
     "Led",
     "create_model",

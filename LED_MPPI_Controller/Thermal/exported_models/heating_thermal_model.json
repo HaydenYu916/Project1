@@ -1,0 +1,13 @@
+{
+  "model_type": "Pure Thermodynamic Model - Heating Phase",
+  "formula": "ΔT(t) = K1(a1) × (1 - exp(-t/τ1)) + K2(a1) × (1 - exp(-t/τ2))",
+  "solar_correction": "K1(a1) = K1_base × (1 + α_solar × (a1_val - 1.4)), K2(a1) = K2_base × (1 + α_solar × (a1_val - 1.4))",
+  "parameters": {
+    "K1_base": 4.260038238599745,
+    "tau1": 12.380527350353342,
+    "K2_base": 4.807083871300749,
+    "tau2": 192.93614028565025,
+    "alpha_solar": 1.472768584503253
+  },
+  "a1_ref": 1.4
+}

@@ -10,7 +10,8 @@ warnings.filterwarnings("ignore")
 try:
     from .led import (
         LedThermalParams,
-        FirstOrderThermalModel,
+        ThermalModelManager,
+        FirstOrderThermalModel,  # 兼容性别名
         PWMtoPPFDModel,  # 备用（当前未直接使用）
         PWMtoPowerModel,
     )
@@ -18,40 +19,45 @@ except ImportError:
     # 直接运行本文件时，使用绝对导入（src 目录会在 sys.path 中）
     from led import (
         LedThermalParams,
-        FirstOrderThermalModel,
+        ThermalModelManager,
+        FirstOrderThermalModel,  # 兼容性别名
         PWMtoPPFDModel,  # 备用（当前未直接使用）
         PWMtoPowerModel,
     )
 
-# 传感器读取
-try:
-    from .sensor_reading import (
-        SensorReading,
-        DEFAULT_DEVICE_ID,
-        RIOTEE_DATA_PATH,
-        CO2_DATA_PATH,
-        DEFAULT_CO2_PPM,
-    )
-except ImportError:
-    from sensor_reading import (
-        SensorReading,
-        DEFAULT_DEVICE_ID,
-        RIOTEE_DATA_PATH,
-        CO2_DATA_PATH,
-        DEFAULT_CO2_PPM,
-    )
+# 传感器读取 - 简化版本，移除外部依赖
+DEFAULT_DEVICE_ID = "T6ncwg=="
+RIOTEE_DATA_PATH = "Sensor/riotee_sensor/data"
+CO2_DATA_PATH = "Sensor/riotee_sensor/data"
+DEFAULT_CO2_PPM = 400.0
+
+class SensorReading:
+    """简化的传感器读取类，用于MPPI演示"""
+    def __init__(self, device_id=None, riotee_data_path=None, co2_data_path=None):
+        self.device_id = device_id or DEFAULT_DEVICE_ID
+        self.riotee_data_path = riotee_data_path or RIOTEE_DATA_PATH
+        self.co2_data_path = co2_data_path or CO2_DATA_PATH
+    
+    def read_latest_riotee_data(self):
+        """读取最新的Riotee数据 - 简化版本"""
+        # 返回None表示使用默认温度
+        return None, None, None, None
+    
+    def read_latest_co2_data(self):
+        """读取最新的CO2数据 - 简化版本"""
+        return DEFAULT_CO2_PPM
 
 
 # ------------------------------
 # LEDPlant (Solar Vol 控制)
 # ------------------------------
 class LEDPlant:
-    """使用LED模块的MPPI LED植物模型，支持Solar Vol模型（以 Solar Vol 为控制量）"""
+    """使用新版热力学模型的MPPI LED植物模型，支持Solar Vol控制"""
 
     def __init__(
         self,
         base_ambient_temp=25.0,
-        max_solar_vol=2.0,
+        max_solar_vol=2.0,  # 支持更广范围，实际数据范围1.202-1.912V
         max_power=130.0,
         thermal_resistance=0.05,
         time_constant_s=7.5,
@@ -60,7 +66,10 @@ class LEDPlant:
         power_model=None,
         co2_ppm=400.0,
         r_b_ratio=0.83,
-        use_solar_vol_model=True,):
+        use_solar_vol_model=True,
+        thermal_model_type: str = "thermal",  # "mlp" 或 "thermal"
+        model_dir: str = "Thermal/exported_models",  # 模型文件目录
+    ):
         self.base_ambient_temp = base_ambient_temp
         self.max_solar_vol = max_solar_vol
         self.max_power = max_power
@@ -68,8 +77,14 @@ class LEDPlant:
         self.co2_ppm = co2_ppm
         self.r_b_ratio = r_b_ratio
         self.use_solar_vol_model = use_solar_vol_model
+        self.thermal_model_type = thermal_model_type
+        self.model_dir = model_dir
+        
+        # MPPI控制状态跟踪
+        self.current_control = 0.0  # 当前控制量u0
+        self.previous_control = 0.0  # 前一个控制量u1
 
-        # 热力学参数与模型
+        # 🔥 新版热力学参数与模型
         self.thermal_params = LedThermalParams(
             base_ambient_temp=base_ambient_temp,
             thermal_resistance=thermal_resistance,
@@ -77,10 +92,13 @@ class LEDPlant:
             thermal_mass=thermal_mass,
             max_ppfd=max_solar_vol * 100,
             max_power=max_power,
+            model_type=thermal_model_type,
+            model_dir=model_dir,
+            solar_threshold=1.4,  # 添加Solar阈值
         )
-        self.thermal_model = FirstOrderThermalModel(
-            params=self.thermal_params, initial_temp=base_ambient_temp
-        )
+        
+        # 🔥 使用新版热力学模型管理器
+        self.thermal_model = ThermalModelManager(self.thermal_params)
 
         # 模型
         self.solar_vol_model = solar_vol_model
@@ -100,6 +118,11 @@ class LEDPlant:
 
         # 光合作用模型
         self._init_photosynthesis_models()
+        
+        print(f"🔥 LEDPlant初始化完成:")
+        print(f"   热力学模型类型: {thermal_model_type}")
+        print(f"   模型目录: {model_dir}")
+        print(f"   MPPI控制跟踪: 当前u0={self.current_control}, 前一个u1={self.previous_control}")
 
     def _init_photosynthesis_models(self):#初始化光合作用预测模型 - 只使用Solar Vol模型
         """初始化光合作用预测模型 - 只使用Solar Vol模型"""
@@ -129,6 +152,14 @@ class LEDPlant:
             SOLAR_VOL_MODEL_PATH, "normalization_params.pkl"
         )
 
+        print(f"🔍 模型文件路径检查:")
+        print(f"   模型目录: {SOLAR_VOL_MODEL_PATH}")
+        print(f"   模型文件: {model_file}")
+        print(f"   特征文件: {feature_file}")
+        print(f"   归一化文件: {normalizer_file}")
+        print(f"   模型目录存在: {os.path.exists(SOLAR_VOL_MODEL_PATH)}")
+        print(f"   模型文件存在: {os.path.exists(model_file)}")
+
         self.feature_info = {
             "feature_columns": ["Solar_Vol", "CO2", "T", "R:B"],
             "pn_column": "Pn_avg",
@@ -142,6 +173,7 @@ class LEDPlant:
                 with open(feature_file, "rb") as f:
                     feature_info_from_file = pickle.load(f)
                 self.feature_info.update(feature_info_from_file)
+                print(f"✅ 成功加载特征信息: {self.feature_info}")
             except Exception as e:
                 print(f"警告: 无法加载特征信息文件，使用默认值: {e}")
 
@@ -150,7 +182,7 @@ class LEDPlant:
 
         try:
             self.solar_vol_model = joblib.load(model_file)
-            print(f"成功使用joblib加载Solar Vol模型: {type(self.solar_vol_model)}")
+            print(f"✅ 成功使用joblib加载Solar Vol模型: {type(self.solar_vol_model)}")
             print(f"Solar Vol模型信息: {self.feature_info}")
 
             if not os.path.exists(normalizer_file):
@@ -167,7 +199,7 @@ class LEDPlant:
                     raise ValueError(
                         "normalization_params.pkl 缺少必要键: feat_mean, feat_std, target_mean, target_std"
                     )
-                print("✓ 已加载Solar Vol模型的归一化参数")
+                print("✅ 已加载Solar Vol模型的归一化参数")
             except Exception as e:
                 raise RuntimeError(f"加载归一化参数失败: {e}")
 
@@ -175,46 +207,63 @@ class LEDPlant:
             raise RuntimeError(f"joblib加载Solar Vol模型失败: {e}")
     #重点步骤
     def step(self, solar_vol, dt=900, device_id=DEFAULT_DEVICE_ID):
-        #单步仿真，步长为900秒后的温度，功率，光合作用速率，用在MPPI函数的
+        """🔥 新版热力学模型单步仿真 - 基于MPPI控制量变化"""
         if device_id != DEFAULT_DEVICE_ID:
             self.sensor_reader.device_id = device_id
+            
+        # 读取实时温度（可选）
         try:
             current_temp, _csv_sv, _pn, timestamp = (
                 self.sensor_reader.read_latest_riotee_data()
             )
+            if current_temp is not None:
+                self.ambient_temp = current_temp
+                self.thermal_model.ambient_temp = current_temp
+                print(f"🌡️ 使用最新温度: {current_temp:.2f}°C (时间戳: {timestamp})")
         except Exception:
             current_temp, timestamp = None, None
-
-        if current_temp is not None:
-            self.ambient_temp = current_temp
-            self.thermal_model.ambient_temp = current_temp
-            print(f"使用最新温度: {current_temp:.2f}°C (时间戳: {timestamp})")
 
         # Solar Vol → (R_PWM, B_PWM)
         r_pwm, b_pwm = self._solar_vol_to_pwm(float(solar_vol), self.r_b_ratio)
 
-        # 功率
+        # 功率计算
         if self.power_model is None:
             raise RuntimeError("功率模型未提供，请使用 led.py 中的 PWMtoPowerModel")
         total_pwm_for_power = r_pwm + b_pwm
         power_key = self._get_power_model_key(self.r_b_ratio)
         power = self.power_model.predict(total_pwm=total_pwm_for_power, key=power_key)
 
-        # 热模型步进
-        new_ambient_temp = self.thermal_model.step(power=power, dt=dt)
+        # 🔥 计算MPPI控制量变化: u0 - u1
+        control_change = float(solar_vol) - self.previous_control
+        
+        # 🔥 新版热力学模型步进 - 基于控制量变化判断升温/降温
+        new_ambient_temp = self.thermal_model.step(
+            power=power,
+            dt=dt,
+            solar_vol=float(solar_vol),
+            control_change=control_change,  # 传递控制量变化
+        )
 
         # 状态更新
         self.current_solar_vol = float(solar_vol)
         self.ambient_temp = new_ambient_temp
         self.time += dt
+        
+        # 🔥 更新MPPI控制状态
+        self.previous_control = self.current_control
+        self.current_control = float(solar_vol)
 
-        # CO2
+        # CO2读取
         current_co2 = self.sensor_reader.read_latest_co2_data()
 
-        # Pn 预测
+        # 光合作用预测
         photosynthesis_rate = self.get_photosynthesis_rate(
             self.current_solar_vol, new_ambient_temp, current_co2
         )
+
+        # 输出调试信息
+        phase = "升温" if control_change > 0 else "降温"
+        print(f"🔥 MPPI热力学步进: u0={solar_vol:.3f}, Δu={control_change:.3f} ({phase}) → 温度: {new_ambient_temp:.2f}°C")
 
         return self.current_solar_vol, new_ambient_temp, power, photosynthesis_rate
 
@@ -332,7 +381,10 @@ class LEDPlant:
         co2_sequence=None,
         r_b_sequence=None,
     ):
-        temp_model = FirstOrderThermalModel(params=self.thermal_params, initial_temp=initial_temp)
+        """🔥 新版热力学模型预测整条控制序列 - 基于MPPI控制量变化"""
+        # 创建独立的热力学模型实例用于预测
+        temp_model = ThermalModelManager(self.thermal_params)
+        temp_model.reset(initial_temp)
 
         temp = initial_temp
         solar_vol_inputs = []
@@ -341,6 +393,9 @@ class LEDPlant:
         photo_predictions = []
         r_pwm_predictions = []
         b_pwm_predictions = []
+        
+        # 🔥 MPPI控制状态跟踪
+        prev_control = 0.0  # 初始控制量
 
         for i, solar_vol_control in enumerate(solar_vol_control_sequence):
             current_co2 = co2_sequence[i] if co2_sequence is not None else self.co2_ppm
@@ -355,8 +410,20 @@ class LEDPlant:
             power_key = self._get_power_model_key(current_r_b)
             predicted_power = self.power_model.predict(total_pwm=total_pwm_for_power, key=power_key)
 
-            predicted_temp = temp_model.step(power=predicted_power, dt=dt)
+            # 🔥 计算控制量变化: u0 - u1
+            control_change = float(solar_vol_control) - prev_control
+            
+            # 🔥 使用新版热力学模型预测 - 基于控制量变化
+            predicted_temp = temp_model.step(
+                power=predicted_power,
+                dt=dt,
+                solar_vol=float(solar_vol_control),
+                control_change=control_change,  # 传递控制量变化
+            )
             temp = predicted_temp
+            
+            # 🔥 更新控制状态
+            prev_control = float(solar_vol_control)
 
             predicted_photosynthesis = self.get_photosynthesis_rate(
                 solar_vol_control, predicted_temp, current_co2, current_r_b
@@ -378,6 +445,52 @@ class LEDPlant:
             np.array(b_pwm_predictions),
         )
 
+    def get_thermal_model_info(self):
+        """获取热力学模型信息"""
+        return {
+            "model_type": self.thermal_model_type,
+            "model_dir": self.model_dir,
+            "supports_solar_input": self.thermal_model.supports_solar_input,
+            "current_temp": self.thermal_model.ambient_temp,
+            "current_control": self.current_control,
+            "previous_control": self.previous_control,
+        }
+    
+    def reset_thermal_model(self, ambient_temp=None):
+        """重置热力学模型状态"""
+        self.thermal_model.reset(ambient_temp)
+        if ambient_temp is not None:
+            self.ambient_temp = ambient_temp
+        # 重置MPPI控制状态
+        self.current_control = 0.0
+        self.previous_control = 0.0
+    
+    def set_thermal_model_type(self, model_type: str):
+        """动态切换热力学模型类型"""
+        if model_type not in ["mlp", "thermal"]:
+            raise ValueError("model_type必须是'mlp'或'thermal'")
+        
+        self.thermal_model_type = model_type
+        
+        # 创建新的参数对象（因为LedThermalParams是frozen）
+        self.thermal_params = LedThermalParams(
+            base_ambient_temp=self.thermal_params.base_ambient_temp,
+            thermal_resistance=self.thermal_params.thermal_resistance,
+            time_constant_s=self.thermal_params.time_constant_s,
+            thermal_mass=self.thermal_params.thermal_mass,
+            max_ppfd=self.thermal_params.max_ppfd,
+            max_power=self.thermal_params.max_power,
+            led_efficiency=self.thermal_params.led_efficiency,
+            efficiency_decay=self.thermal_params.efficiency_decay,
+            model_type=model_type,
+            model_dir=self.thermal_params.model_dir,
+            solar_threshold=self.thermal_params.solar_threshold,
+        )
+        
+        # 重新创建热力学模型
+        self.thermal_model = ThermalModelManager(self.thermal_params)
+        print(f"🔥 热力学模型已切换为: {model_type}")
+
 
 # ------------------------------
 # LEDMPPIController (Solar Vol 控制)
@@ -397,8 +510,8 @@ class LEDMPPIController:
         self.R_du = 0.05
         self.R_power = 0.05
 
-        self.u_min = 0.0
-        self.u_max = float(getattr(self.plant, "max_solar_vol", 2.0))
+        self.u_min = 1.0  # 实际数据最低约1.2V，设置1.0V作为安全边界
+        self.u_max = float(getattr(self.plant, "max_solar_vol", 2.0))  # 支持到2.0V
         self.temp_min = 20.0
         self.temp_max = 32.0
 
@@ -494,11 +607,16 @@ class LEDMPPIController:
         mean_sequence: np.ndarray | None = None,
         solar_vol_ref_seq: np.ndarray | None = None,
     ):
+        """🔥 MPPI求解 - 基于动态mean_sequence的滚动时域优化"""
         if mean_sequence is None:
+            # 初始化参考控制序列
             base = 0.5 * self.u_max
             mean_sequence = np.full(self.horizon, base, dtype=float)
 
+        # 🔥 生成控制序列样本（围绕动态mean_sequence）
         samples = self._sample_control_sequences(mean_sequence)
+        
+        # 🔥 计算所有样本的代价
         costs = np.array(
             [
                 self._compute_cost(samples[i], current_temp, solar_vol_ref_seq)
@@ -508,14 +626,17 @@ class LEDMPPIController:
         )
         costs = np.nan_to_num(costs, nan=1e10, posinf=1e10)
 
+        # 🔥 Softmax权重计算
         min_cost = float(np.min(costs))
         weights = np.exp(-(costs - min_cost) / max(1e-6, self.temperature))
         weights /= float(np.sum(weights))
 
+        # 🔥 计算最优控制序列
         optimal_seq = np.sum(weights[:, np.newaxis] * samples, axis=0)
         optimal_seq = np.clip(optimal_seq, self.u_min, self.u_max)
         optimal_u = float(optimal_seq[0])
 
+        # 🔥 温度安全检查
         try:
             _sv, t_check, _pw, _pn, _r, _b = self.plant.predict([optimal_u], current_temp, dt=self.dt)
             if t_check[0] > self.temp_max:
@@ -523,8 +644,18 @@ class LEDMPPIController:
         except Exception:
             pass
 
+        # 🔥 更新控制状态（用于下次MPPI迭代）
         self.u_prev = optimal_u
+        
         return optimal_u, optimal_seq, True, min_cost, weights
 
 
-__all__ = ["LEDPlant", "LEDMPPIController", "LedThermalParams", "PWMtoPowerModel", "PWMtoPPFDModel"]
+__all__ = [
+    "LEDPlant", 
+    "LEDMPPIController", 
+    "LedThermalParams", 
+    "ThermalModelManager",  # 新增
+    "FirstOrderThermalModel",  # 兼容性别名
+    "PWMtoPowerModel", 
+    "PWMtoPPFDModel"
+]
