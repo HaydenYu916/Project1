@@ -33,7 +33,7 @@ DEFAULT_BASE_AMBIENT_TEMP = 25.0
 DEFAULT_THERMAL_RESISTANCE = 0.05
 DEFAULT_TIME_CONSTANT_S = 7.5
 DEFAULT_THERMAL_MASS = 150.0
-DEFAULT_MAX_PPFD = 200.0
+DEFAULT_MAX_PPFD = 500.0
 DEFAULT_MAX_POWER = 130.0
 DEFAULT_LED_EFFICIENCY = 0.8
 DEFAULT_EFFICIENCY_DECAY = 0.1
@@ -50,7 +50,7 @@ class LedThermalParams:
     led_efficiency: float = DEFAULT_LED_EFFICIENCY
     efficiency_decay: float = DEFAULT_EFFICIENCY_DECAY
     model_type: Literal["mlp", "thermal"] = "thermal"
-    model_dir: str = "../Thermal/exported_models"
+    model_dir: str = "Thermal/exported_models"
     solar_threshold: float = 1.4  # Solar值阈值，用于判断升温/降温
 
 class ThermalModelManager:

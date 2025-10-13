@@ -3,11 +3,13 @@ import sys
 import time
 from pathlib import Path
 
+# 添加src目录到Python路径
+sys.path.append(str(Path(__file__).parent.parent / "src"))
 from shelly_controller import rpc, DEVICES
 
 
-DEFAULT_INPUT = "Parsed_log_table.csv"
-DEFAULT_OUTPUT = "Parsed_log_table_filled.csv"
+DEFAULT_INPUT = str(Path(__file__).parent / "Parsed_log_table.csv")
+DEFAULT_OUTPUT = str(Path(__file__).parent / "Parsed_log_table_filled.csv")
 
 
 def normalize_split(line: str) -> list[str]:
@@ -79,7 +81,7 @@ def get_device_status(device_name: str):
     }
 
 
-def process_file(input_path: str, output_path: str, settle_sec: float = 1.0):
+def process_file(input_path: str, output_path: str, settle_sec: float = 5.0):
     in_path = Path(input_path)
     if not in_path.exists():
         raise FileNotFoundError(f"输入文件不存在: {input_path}")
@@ -174,7 +176,7 @@ def process_file(input_path: str, output_path: str, settle_sec: float = 1.0):
 def main():
     input_path = DEFAULT_INPUT
     output_path = DEFAULT_OUTPUT
-    settle_sec = 1.0
+    settle_sec = 5.0
 
     if len(sys.argv) >= 2:
         input_path = sys.argv[1]

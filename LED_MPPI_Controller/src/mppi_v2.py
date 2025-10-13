@@ -26,9 +26,9 @@ except ImportError:
     )
 
 # 传感器读取 - 简化版本，移除外部依赖
-DEFAULT_DEVICE_ID = "T6ncwg=="
-RIOTEE_DATA_PATH = "Sensor/riotee_sensor/data"
-CO2_DATA_PATH = "Sensor/riotee_sensor/data"
+DEFAULT_DEVICE_ID = "L_6vSQ=="
+RIOTEE_DATA_PATH = "../Sensor/riotee_sensor/logs/riotee_data_all.csv"
+CO2_DATA_PATH = "/data/csv/co2_sensor.csv"
 DEFAULT_CO2_PPM = 400.0
 
 class SensorReading:
@@ -39,13 +39,64 @@ class SensorReading:
         self.co2_data_path = co2_data_path or CO2_DATA_PATH
     
     def read_latest_riotee_data(self):
-        """读取最新的Riotee数据 - 简化版本"""
-        # 返回None表示使用默认温度
-        return None, None, None, None
+        """读取最新的Riotee数据"""
+        try:
+            import pandas as pd
+            
+            if not os.path.exists(self.riotee_data_path):
+                print(f"警告: 数据文件不存在: {self.riotee_data_path}")
+                return None, None, None, None
+
+            df = pd.read_csv(self.riotee_data_path, comment="#")
+            device_data = df[df["device_id"] == self.device_id].copy()
+            if device_data.empty:
+                print(f"警告: 未找到设备ID {self.device_id} 的数据")
+                return None, None, None, None
+
+            device_data["timestamp"] = pd.to_datetime(device_data["timestamp"])
+            latest_time = device_data["timestamp"].max()
+            window_start = latest_time - pd.Timedelta(minutes=10)
+            recent = device_data[device_data["timestamp"] >= window_start]
+            if recent.empty:
+                print(f"警告: 过去10分钟内没有数据")
+                return None, None, None, None
+
+            win = min(5, len(recent))
+            recent["a1_raw_filtered"] = recent["a1_raw"].rolling(window=win, center=True).mean()
+
+            temperature = float(device_data.iloc[-1]["temperature"])
+            solar_vol = float(recent["a1_raw_filtered"].mean())
+            pn_avg = None
+
+            return temperature, solar_vol, pn_avg, latest_time
+        except Exception as e:
+            print(f"错误: 读取Riotee数据失败: {e}")
+            return None, None, None, None
     
     def read_latest_co2_data(self):
-        """读取最新的CO2数据 - 简化版本"""
-        return DEFAULT_CO2_PPM
+        """读取最新的CO2数据"""
+        try:
+            import pandas as pd
+            
+            if not self.co2_data_path or not os.path.exists(self.co2_data_path):
+                print(f"警告: CO2数据文件不存在: {self.co2_data_path}，使用默认值 {DEFAULT_CO2_PPM} ppm")
+                return DEFAULT_CO2_PPM
+            
+            df = pd.read_csv(self.co2_data_path, header=None, names=["timestamp", "co2"])
+            if df.empty:
+                print("警告: CO2数据文件为空，使用默认值")
+                return DEFAULT_CO2_PPM
+            
+            latest = df.iloc[-1]
+            co2_value = latest.get("co2")
+            if co2_value is None or pd.isna(co2_value):
+                print("警告: 最新CO2值无效，使用默认值")
+                return DEFAULT_CO2_PPM
+            
+            return float(co2_value)
+        except Exception as e:
+            print(f"错误: 读取CO2数据失败: {e}，使用默认值 {DEFAULT_CO2_PPM} ppm")
+            return DEFAULT_CO2_PPM
 
 
 # ------------------------------
@@ -324,8 +375,14 @@ class LEDPlant:
             filtered_data = self._solar_vol_data[
                 self._solar_vol_data["R:B"] == r_b_ratio
             ]
-            if filtered_data.empty or filtered_data["Solar_Vol"].nunique() < 2:
-                return self._fallback_linear_conversion(solar_vol)
+            # if filtered_data.empty or filtered_data["Solar_Vol"].nunique() < 2:
+            #     return self._fallback_linear_conversion(solar_vol)
+            
+            # 确保数据完整性，如果数据不足则抛出异常
+            if filtered_data.empty:
+                raise ValueError(f"Solar_Vol_clean.csv中找不到R:B={r_b_ratio}的数据")
+            if filtered_data["Solar_Vol"].nunique() < 2:
+                raise ValueError(f"Solar_Vol_clean.csv中R:B={r_b_ratio}的Solar_Vol数据点不足（少于2个）")
 
             # 按 Solar Vol 进行线性插值得到目标 PPFD
             sorted_sv = filtered_data.sort_values("Solar_Vol")
@@ -338,17 +395,26 @@ class LEDPlant:
                 if abs(solar_val - r_b_ratio) < 0.01:
                     calib_rb = calib_key
                     break
+            # if calib_rb is None:
+            #     return self._fallback_linear_conversion(solar_vol)
+            
             if calib_rb is None:
-                return self._fallback_linear_conversion(solar_vol)
+                raise ValueError(f"无法找到R:B比例{r_b_ratio}对应的标定键，支持的映射: {self._rb_mapping}")
 
             calib_filtered = self._calib_data[self._calib_data["R:B"] == calib_rb]
+            # if calib_filtered.empty:
+            #     return self._fallback_linear_conversion(solar_vol)
+            
             if calib_filtered.empty:
-                return self._fallback_linear_conversion(solar_vol)
+                raise ValueError(f"calib_data.csv中找不到R:B={calib_rb}的标定数据")
 
             calib_sorted = calib_filtered.sort_values("PPFD")
             ppfd_calib = calib_sorted["PPFD"].to_numpy(dtype=float)
+            # if len(ppfd_calib) < 2:
+            #     return self._fallback_linear_conversion(solar_vol)
+            
             if len(ppfd_calib) < 2:
-                return self._fallback_linear_conversion(solar_vol)
+                raise ValueError(f"calib_data.csv中R:B={calib_rb}的PPFD数据点不足（少于2个）")
 
             r_pwm_interp = np.interp(target_ppfd, ppfd_calib, calib_sorted["R_PWM"].to_numpy(dtype=float))
             b_pwm_interp = np.interp(target_ppfd, ppfd_calib, calib_sorted["B_PWM"].to_numpy(dtype=float))
@@ -356,15 +422,17 @@ class LEDPlant:
             r_pwm = min(100.0, max(0.0, float(r_pwm_interp)))
             b_pwm = min(100.0, max(0.0, float(b_pwm_interp)))
             return r_pwm, b_pwm
-        except Exception:
-            return self._fallback_linear_conversion(solar_vol)
+        except Exception as e:
+            # return self._fallback_linear_conversion(solar_vol)
+            # 抛出原始异常，不使用备用转换
+            raise RuntimeError(f"Solar Vol到PWM转换失败: {e}") from e
 
-    def _fallback_linear_conversion(self, solar_vol):
-        total_pwm = (solar_vol / self.max_solar_vol) * 100.0
-        total_pwm = max(0.0, min(100.0, total_pwm))
-        r_pwm = total_pwm * self.r_b_ratio
-        b_pwm = total_pwm * (1 - self.r_b_ratio)
-        return r_pwm, b_pwm
+    # def _fallback_linear_conversion(self, solar_vol):
+    #     total_pwm = (solar_vol / self.max_solar_vol) * 100.0
+    #     total_pwm = max(0.0, min(100.0, total_pwm))
+    #     r_pwm = total_pwm * self.r_b_ratio
+    #     b_pwm = total_pwm * (1 - self.r_b_ratio)
+    #     return r_pwm, b_pwm
 
     def _get_power_model_key(self, r_b_ratio):
         rb_to_key_mapping = {0.5: "1:1", 0.75: "3:1", 0.83: "5:1", 0.88: "7:1", 1.0: "r1"}

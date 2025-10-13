@@ -81,7 +81,7 @@ class MPPISimulationV2:
             base_ambient_temp=25.0,
             max_solar_vol=2.0,
             thermal_model_type='thermal',  # 使用热力学模型
-            model_dir='../../Thermal/exported_models',  # 指定模型目录
+            model_dir='Thermal/exported_models',  # 指定模型目录
             power_model=power_model,
             r_b_ratio=self.r_b_ratio,
             use_solar_vol_model=True,
@@ -275,8 +275,8 @@ class MPPISimulationV2:
 
         row = {
             "timestamp": timestamp,
-            "sensor_timestamp": env.get("timestamp"),
-            "input_temp": measured_temp,
+            "sensor_timestamp": env.get("timestamp") or "",
+            "input_temp": measured_temp if measured_temp is not None else "",
             "co2_ppm": env.get("co2"),
             "solar_vol_cmd": float(optimal_sv),
             "r_pwm": float(r_pwm),
