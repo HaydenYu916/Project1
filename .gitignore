@@ -1,5 +1,6 @@
 # Virtual Environment
 riotee-env/
+riotee-env.tar.gz
 .venv/
 venv/
 ENV/
