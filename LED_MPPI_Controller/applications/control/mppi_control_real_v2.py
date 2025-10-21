@@ -26,11 +26,11 @@ import numpy as np
 # 固定默认参数，可按需修改
 CONTROL_INTERVAL_MINUTES = 15.0
 DEFAULT_TARGET_SOLAR_VOL = 1.6  # 固定的Solar Vol目标值
-DEFAULT_REFERENCE_WEIGHT = 25.0  # Solar Vol参考跟踪权重
+DEFAULT_REFERENCE_WEIGHT = 50.0  # Solar Vol参考跟踪权重 (从25.0->30.0->50.0，提高跟踪效果)
 RB_RATIO = 0.83
 STATUS_CHECK_DELAY = 3.0
-NIGHT_START_HOUR = 23
-NIGHT_END_HOUR = 7
+NIGHT_START_HOUR = 1
+NIGHT_END_HOUR = 9
 
 # 路径设置
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -126,15 +126,17 @@ class MPPIControlV2:
             u_min=0.05,
             u_max=float(self.plant.max_solar_vol),
             temp_min=20.0,
-            temp_max=29.8,
+            temp_max=32.0,  # 从29.8°C放宽到32°C，增加2.2°C允许范围，减少温度约束压制
         )
         self.controller.set_weights(
-            Q_photo=25.0,
-            R_du=0.02,
-            R_power=0.005,
-            Q_ref=self.reference_weight,
+            Q_photo=15.0,  # 从25.0降低到15.0，减少光合作用权重，让参考跟踪更突出
+            R_du=0.01,     # 从0.02降低到0.01，减少控制变化惩罚，允许更积极的控制
+            R_power=0.002, # 从0.005降低到0.002，减少功率惩罚，允许更高功率输出
+            Q_ref=self.reference_weight,  # 50.0的参考跟踪权重，最高优先级
         )
         self.controller.set_mppi_params(u_std=0.25, dt=self.control_interval_seconds)
+        # 大幅降低温度惩罚，让控制器更关注 Solar Vol 跟踪
+        self.controller.set_penalties(temp_penalty=1e3)  # 从1e5(100000)降低到1e3(1000)，减少100倍温度约束压制
 
     def _load_power_model(self) -> PWMtoPowerModel:
         calib_csv = os.path.join(PROJECT_ROOT, "data", "calib_data.csv")

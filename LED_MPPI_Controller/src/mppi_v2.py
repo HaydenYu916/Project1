@@ -621,6 +621,13 @@ class LEDMPPIController:
         if dt is not None:
             self.dt = float(dt)
 
+    def set_penalties(self, temp_penalty=None, u_penalty=None):
+        """设置惩罚权重"""
+        if temp_penalty is not None:
+            self.temp_penalty = float(temp_penalty)
+        if u_penalty is not None:
+            self.u_penalty = float(u_penalty)
+
     def _sample_control_sequences(self, mean_sequence: np.ndarray) -> np.ndarray:
         #生成噪声，用于MPPI函数的采样
         noise = np.random.normal(0.0, self.u_std, (self.num_samples, self.horizon))
