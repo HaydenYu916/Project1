@@ -28,7 +28,9 @@ CONTROL_INTERVAL_MINUTES = 15.0
 DEFAULT_TARGET_SOLAR_VOL = 1.6  # 固定的Solar Vol目标值
 DEFAULT_REFERENCE_WEIGHT = 50.0  # Solar Vol参考跟踪权重 (从25.0->30.0->50.0，提高跟踪效果)
 RB_RATIO = 0.83
-STATUS_CHECK_DELAY = 3.0
+STATUS_CHECK_DELAY = 5.0  # 从3.0秒增加到5.0秒，等待Shelly稳定
+PWM_RETRY_MAX = 3  # PWM发送失败时的最大重试次数
+PWM_TOLERANCE = 3  # PWM占空比验证容差（0-100范围内，允许±3的偏差）
 NIGHT_START_HOUR = 1
 NIGHT_END_HOUR = 9
 
@@ -250,33 +252,166 @@ class MPPIControlV2:
             return None
         return np.full(self.controller.horizon, self.target_solar_vol, dtype=float)
 
+    def _verify_pwm(self, device_name: str, expected_brightness: int) -> bool:
+        """验证设备PWM是否成功设置
+        
+        Args:
+            device_name: 设备名称 ("Red" 或 "Blue")
+            expected_brightness: 期望的亮度值 (0-100)
+        
+        Returns:
+            bool: 验证成功返回True，失败返回False
+        """
+        if device_name not in self.devices:
+            return False
+        
+        try:
+            # 获取设备状态
+            status = rpc(self.devices[device_name], "Shelly.GetStatus")
+            
+            # 检查是否有错误
+            if isinstance(status, dict) and "error" in status:
+                self._log_simple(f"❌ {device_name} 状态查询失败: {status['error']}")
+                return False
+            
+            # 提取light:0的状态
+            light_status = status.get("light:0", {})
+            actual_brightness = light_status.get("brightness")
+            is_on = light_status.get("output")
+            
+            # 验证设备是否开启且亮度正确（允许一定容差）
+            if not is_on:
+                self._log_simple(f"❌ {device_name} 设备未开启")
+                return False
+            
+            if actual_brightness is None:
+                self._log_simple(f"❌ {device_name} 无法读取亮度值")
+                return False
+            
+            # 检查PWM值是否在容差范围内
+            diff = abs(actual_brightness - expected_brightness)
+            if diff > PWM_TOLERANCE:
+                self._log_simple(
+                    f"❌ {device_name} 亮度不匹配: 期望 {expected_brightness}, "
+                    f"实际 {actual_brightness} (差值 {diff})"
+                )
+                return False
+            
+            # 验证成功
+            if not self.background:
+                print(f"✅ {device_name} 验证成功: 亮度 {actual_brightness}")
+            return True
+            
+        except Exception as exc:  # noqa: BLE001
+            self._log_simple(f"❌ {device_name} 验证异常: {exc}")
+            return False
+
+    def _send_pwm_single_device(
+        self, device_name: str, brightness: int, retry_count: int = 0
+    ) -> Dict[str, Any]:
+        """发送单个设备的PWM命令并验证
+        
+        Args:
+            device_name: 设备名称 ("Red" 或 "Blue")
+            brightness: 亮度值 (0-100)
+            retry_count: 当前重试次数
+        
+        Returns:
+            Dict: 包含发送结果和验证状态的字典
+        """
+        result = {
+            "success": False,
+            "response": None,
+            "error": None,
+            "retries": retry_count,
+            "verified": False,
+        }
+        
+        if device_name not in self.devices:
+            result["error"] = f"设备 {device_name} 不存在"
+            return result
+        
+        # 发送PWM命令
+        payload = {"id": 0, "on": True, "brightness": brightness, "transition": 1000}
+        try:
+            resp = rpc(self.devices[device_name], "Light.Set", payload)
+            result["response"] = resp
+            
+            # 检查RPC响应是否有错误
+            if isinstance(resp, dict) and "error" in resp:
+                result["error"] = f"RPC错误: {resp['error']}"
+                return result
+            
+        except Exception as exc:  # noqa: BLE001
+            result["error"] = f"发送异常: {exc}"
+            return result
+        
+        # 等待设备稳定
+        time.sleep(STATUS_CHECK_DELAY)
+        
+        # 验证PWM是否成功设置
+        if self._verify_pwm(device_name, brightness):
+            result["success"] = True
+            result["verified"] = True
+            return result
+        
+        # 验证失败，如果还有重试机会，则重试
+        if retry_count < PWM_RETRY_MAX:
+            self._log_simple(
+                f"🔄 {device_name} 验证失败，正在重试 ({retry_count + 1}/{PWM_RETRY_MAX})..."
+            )
+            return self._send_pwm_single_device(device_name, brightness, retry_count + 1)
+        
+        # 已达最大重试次数
+        result["error"] = f"达到最大重试次数 ({PWM_RETRY_MAX})"
+        return result
+
     def _send_pwm(self, r_pwm: float, b_pwm: float) -> Dict[str, Any]:
+        """发送PWM命令到红蓝设备，带重试和验证机制
+        
+        Args:
+            r_pwm: 红光PWM值 (0-100)
+            b_pwm: 蓝光PWM值 (0-100)
+        
+        Returns:
+            Dict: 包含两个设备发送结果的字典
+        """
         result: Dict[str, Any] = {"red": None, "blue": None}
         brightness_r = int(np.clip(np.round(r_pwm), 0, 100))
         brightness_b = int(np.clip(np.round(b_pwm), 0, 100))
 
-        if "Red" in self.devices:
-            payload = {"id": 0, "on": True, "brightness": brightness_r, "transition": 1000}
-            try:
-                resp = rpc(self.devices["Red"], "Light.Set", payload)
-                result["red"] = resp
-            except Exception as exc:  # noqa: BLE001
-                result["red"] = {"error": str(exc)}
+        if not self.background:
+            print(f"📡 正在发送PWM命令: 红 {brightness_r}% / 蓝 {brightness_b}%")
 
+        # 发送红光设备PWM
+        if "Red" in self.devices:
+            result["red"] = self._send_pwm_single_device("Red", brightness_r)
+            if result["red"]["success"]:
+                msg = f"✅ 红光设备设置成功: {brightness_r}%"
+                if result["red"]["retries"] > 0:
+                    msg += f" (重试 {result['red']['retries']} 次)"
+                self._log_simple(msg)
+            else:
+                self._log_simple(
+                    f"❌ 红光设备设置失败: {result['red'].get('error', '未知错误')}"
+                )
+
+        # 发送蓝光设备PWM
         if "Blue" in self.devices:
-            payload = {"id": 0, "on": True, "brightness": brightness_b, "transition": 1000}
-            try:
-                resp = rpc(self.devices["Blue"], "Light.Set", payload)
-                result["blue"] = resp
-            except Exception as exc:  # noqa: BLE001
-                result["blue"] = {"error": str(exc)}
+            result["blue"] = self._send_pwm_single_device("Blue", brightness_b)
+            if result["blue"]["success"]:
+                msg = f"✅ 蓝光设备设置成功: {brightness_b}%"
+                if result["blue"]["retries"] > 0:
+                    msg += f" (重试 {result['blue']['retries']} 次)"
+                self._log_simple(msg)
+            else:
+                self._log_simple(
+                    f"❌ 蓝光设备设置失败: {result['blue'].get('error', '未知错误')}"
+                )
 
         if not self.background:
-            print(
-                f"📡 已发送命令: 红 {brightness_r} / 蓝 {brightness_b}; "
-                f"响应: {result}"
-            )
-        time.sleep(STATUS_CHECK_DELAY)
+            print(f"📊 发送完成 - 红光: {result['red']}, 蓝光: {result['blue']}")
+
         return result
 
     def _log_cycle(self, payload: Dict[str, Any]) -> None:
@@ -360,13 +495,29 @@ class MPPIControlV2:
         next_pn = float(pn_pred[0]) if len(pn_pred) else 0.0
 
         status = self._send_pwm(r_pwm, b_pwm)
+        
+        # 构建日志注释信息
         note = ""
-        if isinstance(status.get("red"), dict) and "error" in status["red"]:
-            note += f"red_error:{status['red']['error']}"
-        if isinstance(status.get("blue"), dict) and "error" in status["blue"]:
-            if note:
-                note += "|"
-            note += f"blue_error:{status['blue']['error']}"
+        red_status = status.get("red")
+        blue_status = status.get("blue")
+        
+        if red_status:
+            if red_status.get("success"):
+                if red_status.get("retries", 0) > 0:
+                    note += f"red_retry:{red_status['retries']}"
+            elif red_status.get("error"):
+                note += f"red_error:{red_status['error']}"
+        
+        if blue_status:
+            if blue_status.get("success"):
+                if blue_status.get("retries", 0) > 0:
+                    if note:
+                        note += "|"
+                    note += f"blue_retry:{blue_status['retries']}"
+            elif blue_status.get("error"):
+                if note:
+                    note += "|"
+                note += f"blue_error:{blue_status['error']}"
 
         self.current_temp = next_temp
         if not self.background:
