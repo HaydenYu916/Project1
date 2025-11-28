@@ -45,6 +45,10 @@ logs/
 *.log
 *.log.*
 
+# Print output files and PID files
+*_print_output.txt
+*.pid
+
 # 但是要上传data目录下的CSV文件（标定数据）
 !data/*.csv
 

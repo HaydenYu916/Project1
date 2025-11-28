@@ -128,10 +128,10 @@ class MPPIControlV2:
             u_min=0.05,
             u_max=float(self.plant.max_solar_vol),
             temp_min=20.0,
-            temp_max=32.0,  # 从29.8°C放宽到32°C，增加2.2°C允许范围，减少温度约束压制
+            temp_max=35.0,  # 从29.8°C放宽到32°C，增加2.2°C允许范围，减少温度约束压制
         )
         self.controller.set_weights(
-            Q_photo=15.0,  # 从25.0降低到15.0，减少光合作用权重，让参考跟踪更突出
+            Q_photo=25.0,  # 从25.0降低到15.0，减少光合作用权重，让参考跟踪更突出
             R_du=0.01,     # 从0.02降低到0.01，减少控制变化惩罚，允许更积极的控制
             R_power=0.002, # 从0.005降低到0.002，减少功率惩罚，允许更高功率输出
             Q_ref=self.reference_weight,  # 50.0的参考跟踪权重，最高优先级
