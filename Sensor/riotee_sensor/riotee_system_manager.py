@@ -113,8 +113,10 @@ class RioteeSystem:
         logging.info(f"开始启动Riotee数据采集器，实验名称: {experiment_name}")
         
         try:
-            # 构建启动命令 - 使用riotee虚拟环境
+            # 构建启动命令 - 优先使用 riotee 虚拟环境，否则用当前 Python
             riotee_python = "/home/pi/Desktop/riotee-env/bin/python3"
+            if not os.path.exists(riotee_python):
+                riotee_python = sys.executable
             cmd = [riotee_python, str(self.collector_script)]
             if experiment_name:
                 cmd.append(experiment_name)
@@ -176,6 +178,33 @@ class RioteeSystem:
             logging.error(f"启动采集器异常: {e}")
             return False
     
+    def daily_cleanup_print_output(self):
+        """每日清理采集器 Print 输出文件。采集器未运行时才执行，可配合 cron 每日执行。"""
+        if self.is_running():
+            msg = "⏭️  采集器运行中，跳过每日清理（避免影响输出）。请先 stop 后再清理，或由 cron 在停机时段执行。"
+            print(msg)
+            logging.info("每日清理：采集器运行中，跳过")
+            return False
+        if not self.print_output_file.exists():
+            msg = "📄 采集器 Print 输出文件不存在，无需清理"
+            print(msg)
+            logging.info("每日清理：文件不存在，跳过")
+            return True
+        try:
+            self.print_output_file.write_text(
+                f"# 每日清理 @ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n# 已清空历史输出\n",
+                encoding="utf-8",
+            )
+            msg = f"✅ 已每日清理: {self.print_output_file.name}"
+            print(msg)
+            logging.info(f"每日清理完成: {self.print_output_file}")
+            return True
+        except Exception as e:
+            msg = f"❌ 每日清理失败: {e}"
+            print(msg)
+            logging.error(f"每日清理异常: {e}")
+            return False
+
     def cleanup_riotee_files(self):
         """清理Riotee系统相关文件"""
         print("🧹 清理Riotee系统文件...")
@@ -352,6 +381,8 @@ def main():
             system.start_collector(experiment_name)
         elif command == 'stop':
             system.stop_collector()
+        elif command == 'daily-cleanup':
+            system.daily_cleanup_print_output()
         elif command == 'restart':
             system.stop_collector()
             time.sleep(1)
@@ -363,7 +394,7 @@ def main():
             system.view_live_data()
         else:
             print(f"❌ 未知命令: {command}")
-            print("可用命令: start [experiment_name], stop, restart [experiment_name], status, live")
+            print("可用命令: start [experiment_name], stop, restart [experiment_name], status, live, daily-cleanup")
         
         # 命令行模式完成后记录
         if command != 'stop':  # stop命令的日志文件已被清理，不要再记录
