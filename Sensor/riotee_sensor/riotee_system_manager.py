@@ -130,13 +130,16 @@ class RioteeSystem:
                 output_file.write("# " + "="*50 + "\n")
                 output_file.flush()
                 
-                # 以后台进程启动，将stdout重定向到文件
+                # 以后台进程启动，将stdout重定向到文件（无缓冲以便立即看到错误）
+                env = os.environ.copy()
+                env["PYTHONUNBUFFERED"] = "1"
                 process = subprocess.Popen(
                     cmd,
-                    stdout=output_file, 
-                    stderr=subprocess.STDOUT,  # 将stderr也重定向到stdout
+                    stdout=output_file,
+                    stderr=subprocess.STDOUT,
                     cwd=str(self.base_dir),
-                    text=True
+                    text=True,
+                    env=env
                 )
             
             # 保存PID

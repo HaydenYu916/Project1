@@ -8,7 +8,6 @@ import time, logging, csv, os, sys, argparse, struct
 import numpy as np
 import paho.mqtt.client as mqtt
 from datetime import datetime
-from riotee_gateway import GatewayClient, base64_to_numpy
 
 # Command line args
 parser = argparse.ArgumentParser(description='Riotee Data Collector')
@@ -253,6 +252,8 @@ def process_float(device_id, data):
 # ============ Main ============
 def main():
     global mqtt_client
+    from riotee_gateway import GatewayClient, base64_to_numpy  # 延迟导入，便于在 Pi 上看到缺失依赖错误
+    
     print("=" * 60)
     print("Riotee Data Collector Started")
     print("=" * 60)
@@ -330,4 +331,10 @@ def main():
         print("=" * 60)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        print("Riotee采集器异常退出:", e, file=sys.stderr)
+        traceback.print_exc()
+        sys.exit(1)
