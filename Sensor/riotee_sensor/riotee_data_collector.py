@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 Riotee Data Collector - Simplified Version
-Collects sensor data and outputs CSV + JSON (LLM-friendly format)
+Collects sensor data and outputs CSV
 """
 
-import time, json, logging, csv, os, sys, argparse, struct
+import time, logging, csv, os, sys, argparse, struct
 import numpy as np
 import paho.mqtt.client as mqtt
 from datetime import datetime
@@ -37,8 +37,6 @@ mqtt_client = None
 csv_file_all = csv_writer_all = csv_file_summary = csv_writer_summary = None
 record_id = 0
 session_start_time = None
-json_filepath = None
-json_records = []
 device_last_state = {}
 stats = {"packets_received": 0, "mqtt_success": 0, "errors": 0}
 
@@ -142,54 +140,8 @@ def setup_csv():
     csv_writer_summary = csv.DictWriter(csv_file_summary, fieldnames=SUMMARY_FIELDS)
     if mode == 'w': csv_writer_summary.writeheader()
     
-    # JSON file
-    init_json(base, note)
-    
     logging.info(f"Files: {path_all}, {path_sum}")
     return path_all, path_sum
-
-def init_json(base, note):
-    global json_filepath, json_records
-    json_records = []
-    json_filepath = os.path.join(LOGS_DIR, f"{base}_all.json")
-
-def save_json():
-    if not json_filepath or not json_records: return
-    
-    temps = [r["temperature"] for r in json_records if r.get("temperature")]
-    hums = [r["humidity"] for r in json_records if r.get("humidity")]
-    co2s = [r["co2_ppm"] for r in json_records if r.get("co2_ppm")]
-    
-    dur = int(time.time() - session_start_time) if session_start_time else 0
-    
-    output = {
-        "prompt": "Analyze the following Riotee IoT sensor data.",
-        "metadata": {
-            "start_time": datetime.fromtimestamp(session_start_time).strftime("%Y-%m-%d %H:%M:%S") if session_start_time else "",
-            "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "duration": f"{dur//3600}h{(dur%3600)//60}m{dur%60}s",
-            "total_records": len(json_records),
-            "devices": list(set(r.get("device_id","") for r in json_records))
-        },
-        "schema": {
-            "temperature": "celsius", "humidity": "%RH", "a1_raw": "V", "vcap_raw": "V",
-            "co2_ppm": "ppm", "spectral_data": "AS7341 10-channel counts",
-            "spectral_gain": "multiplier", "sleep_time": "seconds"
-        },
-        "records": json_records,
-        "summary": {
-            "temperature": {"min": round(min(temps),2), "max": round(max(temps),2), "avg": round(sum(temps)/len(temps),2)} if temps else {},
-            "humidity": {"min": round(min(hums),2), "max": round(max(hums),2), "avg": round(sum(hums)/len(hums),2)} if hums else {},
-            "co2_ppm": {"min": min(co2s), "max": max(co2s), "avg": round(sum(co2s)/len(co2s))} if co2s else {}
-        }
-    }
-    
-    try:
-        with open(json_filepath, 'w', encoding='utf-8') as f:
-            json.dump(output, f, indent=2)
-        logging.info(f"JSON saved: {len(json_records)} records")
-    except Exception as e:
-        logging.error(f"JSON save error: {e}")
 
 # ============ Data Processing ============
 def write_record(device_id, update_type, temp, hum, a1, vcap, co2, spectrum, gain, sleep):
@@ -225,17 +177,6 @@ def write_record(device_id, update_type, temp, hum, a1, vcap, co2, spectrum, gai
         except: pass
     
     device_last_state[device_id] = {'temp': temp, 'sleep': sleep}
-    
-    # JSON - save every record
-    json_records.append({
-        "id": record_id, "timestamp": ts, "device_id": device_id, "update_type": update_type,
-        "temperature": round(temp, 2), "humidity": round(hum, 2),
-        "a1_raw": round(a1, 3), "vcap_raw": round(vcap, 3),
-        "co2_ppm": co2 if co2 >= 0 else None,
-        "spectral_data": {k: round(v, 2) for k, v in spectrum.items()},
-        "spectral_gain": gain_mult, "sleep_time": sleep
-    })
-    save_json()
     
     # MQTT
     if mqtt_client:
@@ -377,8 +318,6 @@ def main():
         if csv_file_summary:
             csv_file_summary.write(stop_line)
             csv_file_summary.close()
-        
-        save_json()
         
         if mqtt_client:
             mqtt_client.loop_stop()
