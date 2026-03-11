@@ -14,7 +14,7 @@
 ## 📁 项目结构
 
 ```
-Project1/
+Growpro/
 ├── LED_MPPI_Controller/          # MPPI控制核心模块
 │   ├── src/                     # 源代码
 │   │   ├── mppi.py             # MPPI控制器核心
@@ -27,20 +27,12 @@ Project1/
 │   ├── tests/                  # 测试文件
 │   ├── examples/               # 示例代码
 │   └── docs/                   # 文档
-├── Shelly/                      # Shelly设备控制模块
-│   ├── src/                    # 源代码
-│   │   ├── shelly_controller.py # 核心控制器
-│   │   ├── shelly_listener.py   # 实时监听器
-│   │   └── shelly_system_manager.py # 系统管理器
-│   ├── tests/                  # 测试文件
-│   │   ├── pwm_scheduler.py    # PWM调度器
-│   │   ├── pwm_service.py      # PWM服务
-│   │   └── README_PWM_Scheduler.md # PWM调度器文档
-│   ├── examples/               # 示例代码
-│   └── config/                 # 配置文件
-└── Sensor/                      # 传感器数据收集模块
-    ├── riotee_sensor/          # Riotee传感器
-    └── logs/                   # 传感器数据日志
+├── Tool/                        # 工作区根目录共享工具目录
+│   ├── LED_Shelly/             # Shelly设备控制模块
+│   └── Sensor_riotee_server/   # Riotee传感器采集模块
+└── Sensor/                      # 实验数据目录
+    ├── EXP3/                   # 历史实验数据
+    └── EXP4/                   # 历史实验数据
 ```
 
 ## 🚀 快速开始
@@ -61,7 +53,7 @@ python tests/test_all_models.py
 ### 3. Shelly设备控制
 
 ```bash
-cd Shelly
+cd Tool/LED_Shelly
 python src/shelly_controller.py Red on
 python src/shelly_controller.py Blue brightness 50
 ```
@@ -69,14 +61,14 @@ python src/shelly_controller.py Blue brightness 50
 ### 4. PWM调度器运行
 
 ```bash
-cd Shelly
+cd Tool/LED_Shelly
 python tests/pwm_service.py start
 ```
 
 ### 5. 传感器数据收集
 
 ```bash
-cd Sensor/riotee_sensor
+cd Tool/Sensor_riotee_server
 python riotee_system_manager.py start
 ```
 
@@ -109,7 +101,7 @@ Riotee传感器    MPPI优化算法        Shelly设备
 
 ### Shelly设备配置
 
-在 `Shelly/config/device_config.py` 中配置设备IP：
+在工作区根目录的 `Tool/LED_Shelly/config/device_config.py` 中配置设备IP：
 
 ```python
 DEVICES = {
@@ -137,7 +129,7 @@ self.controller = LEDMPPIController(
 
 ### PWM调度器配置
 
-在 `Shelly/tests/src/extended_schedule_*.csv` 中配置时间表：
+在工作区根目录的 `Tool/LED_Shelly/tests/` 下配置时间表：
 
 ```csv
 time,ppfd,r_pwm,b_pwm,phase,phase_name
@@ -166,10 +158,10 @@ time,ppfd,r_pwm,b_pwm,phase,phase_name
 
 ### 常见问题
 
-1. **温度读取失败**: 检查 `Sensor/riotee_sensor/logs/` 中的数据文件
+1. **温度读取失败**: 检查工作区根目录 `Tool/Sensor_riotee_server/logs/` 中的数据文件
 2. **MPPI控制失败**: 检查 `LED_MPPI_Controller/models/` 中的模型文件
-3. **设备连接失败**: 检查 `Shelly/config/device_config.py` 中的IP地址
-4. **PWM调度器不工作**: 检查 `Shelly/tests/` 中的时间表文件
+3. **设备连接失败**: 检查工作区根目录 `Tool/LED_Shelly/config/device_config.py` 中的IP地址
+4. **PWM调度器不工作**: 检查工作区根目录 `Tool/LED_Shelly/tests/` 中的时间表文件
 
 ### 调试模式
 
@@ -179,18 +171,18 @@ cd LED_MPPI_Controller
 python tests/test_all_models.py
 
 # Shelly模块调试
-cd Shelly
+cd Tool/LED_Shelly
 python tests/pwm_scheduler.py --status
 
 # 传感器模块调试
-cd Sensor/riotee_sensor
+cd Tool/Sensor_riotee_server
 python riotee_system_manager.py status
 ```
 
 ## 📝 更新日志
 
 ### v2.0.0 (2025-09-19)
-- **项目重组**: 模块化架构，分为LED_MPPI_Controller、Shelly、Sensor三个独立模块
+- **项目重组**: 控制核心保留在 `LED_MPPI_Controller`，设备与传感器工具统一到工作区根目录 `Tool/`
 - **PWM调度器**: 新增基于时间表的自动PWM控制功能
 - **数据收集**: 自动收集传感器数据并按PPFD时间段分组保存
 - **实时更新**: 支持实时数据更新和后台运行模式
@@ -214,6 +206,5 @@ python riotee_system_manager.py status
 
 - [GitHub仓库](https://github.com/HaydenYu916/Project1)
 - [LED MPPI控制器详细说明](LED_MPPI_Controller/README.md)
-- [Shelly设备控制说明](Shelly/README.md)
-- [PWM调度器使用说明](Shelly/tests/README_PWM_Scheduler.md)
-
+- [Shelly设备控制说明](Tool/LED_Shelly/README.md)
+- [PWM调度器使用说明](Tool/LED_Shelly/tests/README_PWM_Scheduler.md)

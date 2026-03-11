@@ -34,8 +34,9 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(current_dir, "..", "..", "logs", "control_simulate_log.csv")
 project_root = os.path.join(current_dir, '..', '..')
 src_dir = os.path.join(project_root, 'src')
-riotee_sensor_dir = os.path.join(project_root, '..', 'Sensor', 'riotee_sensor')
-controller_dir = os.path.join(project_root, '..', 'Shelly', 'src')
+tool_root = os.path.join(project_root, '..', 'Tool')
+riotee_sensor_dir = os.path.join(tool_root, 'Sensor_riotee_server')
+controller_dir = os.path.join(tool_root, 'LED_Shelly', 'src')
 
 # CO2数据文件路径
 CO2_FILE = "/data/csv/co2_sensor.csv"

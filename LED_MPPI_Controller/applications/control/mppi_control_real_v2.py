@@ -45,8 +45,9 @@ PID_FILE = os.path.join(LOG_DIR, "mppi_v2_control.pid")
 BACKGROUND_LOG_FILE = os.path.join(LOG_DIR, "mppi_v2_control_background.log")
 
 # 附加依赖路径
-RIOTEE_SENSOR_DIR = os.path.join(PROJECT_ROOT, "..", "Sensor", "riotee_sensor")
-SHELLY_DIR = os.path.join(PROJECT_ROOT, "..", "Shelly", "src")
+TOOL_ROOT = os.path.join(PROJECT_ROOT, "..", "Tool")
+RIOTEE_SENSOR_DIR = os.path.join(TOOL_ROOT, "Sensor_riotee_server")
+SHELLY_DIR = os.path.join(TOOL_ROOT, "LED_Shelly", "src")
 CONFIG_DIR = os.path.join(PROJECT_ROOT, "config")
 
 for path in (SRC_DIR, RIOTEE_SENSOR_DIR, SHELLY_DIR, CONFIG_DIR):

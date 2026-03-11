@@ -18,7 +18,7 @@ DEFAULT_DEVICE_ID = "T6ncwg=="
 DEFAULT_CO2_PPM = 450.0
 
 DEFAULT_RIOTEE_DATA_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "Sensor", "riotee_sensor", "logs", "riotee_data_all.csv"
+    os.path.dirname(__file__), "..", "..", "..", "Tool", "Sensor_riotee_server", "logs", "riotee_data_all.csv"
 )
 
 

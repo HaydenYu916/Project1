@@ -1,0 +1,3 @@
+# Start @ 2026-03-11 16:21:55 - run=20260311_162152_h2_pR+y-0311
+id,timestamp,device_id,update_type,temperature,humidity,a1_raw,vcap_raw,co2_ppm,sp_415,sp_445,sp_480,sp_515,sp_555,sp_590,sp_630,sp_680,sp_clear,sp_nir,spectral_gain,sleep_time
+# Stop @ 2026-03-11 16:22:44 (Duration: 0m48s)

@@ -19,8 +19,9 @@ TEMPERATURE_DEVICE_ID = None  # None=自动选择, "T6ncwg=="=指定设备1, "L_
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.join(current_dir, '..')
 src_dir = os.path.join(project_root, 'src')
-riotee_sensor_dir = os.path.join(project_root, '..', 'Sensor', 'riotee_sensor')
-controller_dir = os.path.join(project_root, '..', 'Shelly', 'src')
+tool_root = os.path.join(project_root, '..', '..', 'Tool')
+riotee_sensor_dir = os.path.join(tool_root, 'Sensor_riotee_server')
+controller_dir = os.path.join(tool_root, 'LED_Shelly', 'src')
 
 # 确保项目目录在路径中
 sys.path.insert(0, src_dir)

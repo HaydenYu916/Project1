@@ -1,0 +1,2 @@
+[2026-03-08T15:51:45.544] run_dir=/home/hao/Desktop/Growpro/Growpro/Collect_Sp_PPFD_LED/outputs/20260308_155145_h3_pL
+[2026-03-08T15:51:45.544] segment_count=30

@@ -107,7 +107,7 @@
 ## 运行演示
 
 ```bash
-cd A/Project1/LED_MPPI_Controller
+cd A/Growpro/LED_MPPI_Controller
 python examples/mppi_path_demo_fixed.py
 ```
 

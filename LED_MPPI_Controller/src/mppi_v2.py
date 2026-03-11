@@ -27,7 +27,7 @@ except ImportError:
 
 # 传感器读取 - 简化版本，移除外部依赖
 DEFAULT_DEVICE_ID = "L_6vSQ=="
-RIOTEE_DATA_PATH = "../Sensor/riotee_sensor/logs/riotee_data_all.csv"
+RIOTEE_DATA_PATH = "../Tool/Sensor_riotee_server/logs/riotee_data_all.csv"
 CO2_DATA_PATH = "/data/csv/co2_sensor.csv"
 DEFAULT_CO2_PPM = 400.0
 
