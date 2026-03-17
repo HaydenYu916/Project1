@@ -1,0 +1,4 @@
+scenario,pn_int_umol_m2,energy_wh,ep_pn_per_wh,energy_source,note,pn_int_pct_vs_dynamic,energy_pct_vs_dynamic,ep_pct_vs_dynamic
+dynamic_actual,7858438.190439367,8255.430683977685,951.9113528130264,sensor.greenpi_c1_white_power,swapped_from_constant_mean_ppfd,0.0,0.0,0.0
+constant_mean_ppfd,7546930.373237409,8255.430683977685,914.1776682692824,sensor.greenpi_c1_white_power,swapped_from_dynamic_actual,-3.9639914401940675,0.0,-3.963991440194071
+constant_450_ppfd,10466471.963971956,13824.0,757.1232612826935,sensor.greenpi_c1_redblue_power,unchanged,33.18768577585228,67.4534076923438,-20.462839418261773

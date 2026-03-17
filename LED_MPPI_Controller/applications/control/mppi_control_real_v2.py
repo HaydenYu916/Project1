@@ -26,13 +26,18 @@ import numpy as np
 # 固定默认参数，可按需修改
 CONTROL_INTERVAL_MINUTES = 15.0
 DEFAULT_TARGET_SOLAR_VOL = 1.6  # 固定的Solar Vol目标值
-DEFAULT_REFERENCE_WEIGHT = 50.0  # Solar Vol参考跟踪权重 (从25.0->30.0->50.0，提高跟踪效果)
+DEFAULT_REFERENCE_WEIGHT = 0.0  # 默认关闭参考跟踪，改为功率预算目标
+DEFAULT_POWER_BUDGET_WEIGHT = 25.0
 RB_RATIO = 0.83
 STATUS_CHECK_DELAY = 5.0  # 从3.0秒增加到5.0秒，等待Shelly稳定
 PWM_RETRY_MAX = 3  # PWM发送失败时的最大重试次数
 PWM_TOLERANCE = 3  # PWM占空比验证容差（0-100范围内，允许±3的偏差）
 NIGHT_START_HOUR = 1
 NIGHT_END_HOUR = 9
+THERMAL_ADAPTIVE_ENABLED = True
+THERMAL_UPDATE_INTERVAL_HOURS = 1.0
+THERMAL_UPDATE_WINDOW_HOURS = 6.0
+THERMAL_UPDATE_MIN_SAMPLES = 24
 
 # 路径设置
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -43,6 +48,7 @@ LOG_FILE = os.path.join(LOG_DIR, "mppi_v2_control_log.csv")
 SIMPLE_LOG_FILE = os.path.join(LOG_DIR, "mppi_v2_control_simple.log")
 PID_FILE = os.path.join(LOG_DIR, "mppi_v2_control.pid")
 BACKGROUND_LOG_FILE = os.path.join(LOG_DIR, "mppi_v2_control_background.log")
+THERMAL_RUNTIME_PARAMS_FILE = os.path.join(LOG_DIR, "thermal_runtime_params.json")
 
 # 附加依赖路径
 TOOL_ROOT = os.path.join(PROJECT_ROOT, "..", "Tool")
@@ -69,6 +75,7 @@ from led import PWMtoPowerModel
 from mppi_v2 import LEDMPPIController, LEDPlant
 from sensor_reader import DEFAULT_CO2_PPM
 from shelly_controller import DEVICES, rpc  # type: ignore
+from thermal_parameter_updater import ThermalParameterUpdater
 
 
 def ensure_log_dir() -> None:
@@ -85,9 +92,12 @@ class MPPIControlV2:
         self.control_interval_seconds = CONTROL_INTERVAL_MINUTES * 60.0
         self.target_solar_vol = DEFAULT_TARGET_SOLAR_VOL
         self.reference_weight = DEFAULT_REFERENCE_WEIGHT
+        self.power_budget_weight = DEFAULT_POWER_BUDGET_WEIGHT
+        self.target_mean_power: Optional[float] = None
         self.current_temp: Optional[float] = None
         self.devices = DEVICES
         self.co2_fallback = DEFAULT_CO2_PPM
+        self.thermal_updater: Optional[ThermalParameterUpdater] = None
         self._init_logging()
         self._init_models()
         self._init_log_file()
@@ -116,7 +126,23 @@ class MPPIControlV2:
             power_model=power_model,
             r_b_ratio=RB_RATIO,
             use_solar_vol_model=True,
+            adaptive_thermal_enabled=THERMAL_ADAPTIVE_ENABLED,
+            adaptive_thermal_params_path=THERMAL_RUNTIME_PARAMS_FILE,
         )
+
+        if THERMAL_ADAPTIVE_ENABLED:
+            self.thermal_updater = ThermalParameterUpdater(
+                model_dir=os.path.join(PROJECT_ROOT, "Thermal", "exported_models"),
+                runtime_params_path=THERMAL_RUNTIME_PARAMS_FILE,
+                log_path=LOG_FILE,
+                base_ambient_temp=25.0,
+                model_type='thermal',
+                solar_threshold=1.4,
+                control_interval_seconds=self.control_interval_seconds,
+                update_interval_seconds=THERMAL_UPDATE_INTERVAL_HOURS * 3600.0,
+                window_hours=THERMAL_UPDATE_WINDOW_HOURS,
+                min_samples=THERMAL_UPDATE_MIN_SAMPLES,
+            )
 
         self.controller = LEDMPPIController(
             plant=self.plant,
@@ -132,14 +158,18 @@ class MPPIControlV2:
             temp_max=35.0,  # 从29.8°C放宽到32°C，增加2.2°C允许范围，减少温度约束压制
         )
         self.controller.set_weights(
-            Q_photo=25.0,  # 从25.0降低到15.0，减少光合作用权重，让参考跟踪更突出
-            R_du=0.01,     # 从0.02降低到0.01，减少控制变化惩罚，允许更积极的控制
-            R_power=0.002, # 从0.005降低到0.002，减少功率惩罚，允许更高功率输出
-            Q_ref=self.reference_weight,  # 50.0的参考跟踪权重，最高优先级
+            Q_photo=25.0,
+            R_du=0.01,
+            R_power=0.0,
+            Q_ref=self.reference_weight,
+        )
+        self.target_mean_power = self._estimate_target_mean_power()
+        self.controller.set_power_budget(
+            target_mean_power=self.target_mean_power,
+            power_budget_weight=self.power_budget_weight,
         )
         self.controller.set_mppi_params(u_std=0.25, dt=self.control_interval_seconds)
-        # 大幅降低温度惩罚，让控制器更关注 Solar Vol 跟踪
-        self.controller.set_penalties(temp_penalty=1e3)  # 从1e5(100000)降低到1e3(1000)，减少100倍温度约束压制
+        self.controller.set_penalties(temp_penalty=1e3)
 
     def _load_power_model(self) -> PWMtoPowerModel:
         calib_csv = os.path.join(PROJECT_ROOT, "data", "calib_data.csv")
@@ -147,6 +177,14 @@ class MPPIControlV2:
             raise FileNotFoundError(f"功率标定文件缺失: {calib_csv}")
         model = PWMtoPowerModel(include_intercept=True)
         return model.fit(calib_csv)
+
+    def _estimate_target_mean_power(self) -> Optional[float]:
+        if self.target_solar_vol is None:
+            return None
+        r_pwm, b_pwm = self.plant._solar_vol_to_pwm(float(self.target_solar_vol))  # noqa: SLF001
+        total_pwm = float(r_pwm + b_pwm)
+        power_key = self.plant._get_power_model_key(self.plant.r_b_ratio)  # noqa: SLF001
+        return float(self.plant.power_model.predict(total_pwm=total_pwm, key=power_key))
 
     def _init_log_file(self) -> None:
         if not os.path.exists(LOG_FILE):
@@ -165,6 +203,7 @@ class MPPIControlV2:
                         "pred_power",
                         "pred_pn",
                         "target_solar_vol",
+                        "target_mean_power",
                         "cost",
                         "success",
                         "note",
@@ -252,6 +291,33 @@ class MPPIControlV2:
         if self.target_solar_vol is None or self.reference_weight <= 0:
             return None
         return np.full(self.controller.horizon, self.target_solar_vol, dtype=float)
+
+    def _make_mean_sequence(self) -> Optional[np.ndarray]:
+        if self.target_solar_vol is None:
+            return None
+        return np.full(self.controller.horizon, self.target_solar_vol, dtype=float)
+
+    def _maybe_update_thermal_model(self) -> str:
+        if self.thermal_updater is None:
+            return ""
+
+        try:
+            result = self.thermal_updater.maybe_update()
+        except Exception as exc:  # noqa: BLE001
+            self._log_simple(f"热模型在线更新失败，继续使用基础模型: {exc}")
+            return "thermal_update_error"
+
+        if result.get("status") != "updated":
+            return ""
+
+        self.plant.refresh_thermal_model_runtime_parameters()
+        baseline_mae = result.get("baseline_mae")
+        candidate_mae = result.get("candidate_mae")
+        samples = result.get("samples")
+        self._log_simple(
+            f"热模型参数已更新: samples={samples}, mae {baseline_mae} -> {candidate_mae}"
+        )
+        return f"thermal_updated:{baseline_mae}->{candidate_mae}"
 
     def _verify_pwm(self, device_name: str, expected_brightness: int) -> bool:
         """验证设备PWM是否成功设置
@@ -430,7 +496,8 @@ class MPPIControlV2:
                     payload.get("pred_temp"),
                     payload.get("pred_power"),
                     payload.get("pred_pn"),
-                        payload.get("target_solar_vol"),
+                    payload.get("target_solar_vol"),
+                    payload.get("target_mean_power"),
                     payload.get("cost"),
                     payload.get("success"),
                     payload.get("note"),
@@ -445,18 +512,22 @@ class MPPIControlV2:
 
         env = self._read_environment()
         measured_temp = env.get("temp")
+        if env.get("co2") is not None:
+            self.plant.co2_ppm = float(env["co2"])
         if measured_temp is not None:
             self.current_temp = measured_temp
         elif self.current_temp is None:
             self.current_temp = 25.0
 
         current_temp = float(self.current_temp)
-        # 使用固定的Solar Vol参考值进行跟踪控制
+        thermal_update_note = self._maybe_update_thermal_model()
+        mean_sequence = self._make_mean_sequence()
         solar_vol_ref = self._make_solar_vol_reference()
 
         try:
             optimal_sv, optimal_seq, success, cost, _weights = self.controller.solve(
                 current_temp=current_temp,
+                mean_sequence=mean_sequence,
                 solar_vol_ref_seq=solar_vol_ref,
             )
         except Exception as exc:  # noqa: BLE001
@@ -480,6 +551,7 @@ class MPPIControlV2:
                     "pred_power": None,
                     "pred_pn": None,
                     "target_solar_vol": self.target_solar_vol,
+                    "target_mean_power": self.target_mean_power,
                     "cost": None,
                     "success": False,
                     "note": "solve_failed",
@@ -498,15 +570,19 @@ class MPPIControlV2:
         status = self._send_pwm(r_pwm, b_pwm)
         
         # 构建日志注释信息
-        note = ""
+        note = thermal_update_note
         red_status = status.get("red")
         blue_status = status.get("blue")
         
         if red_status:
             if red_status.get("success"):
                 if red_status.get("retries", 0) > 0:
+                    if note:
+                        note += "|"
                     note += f"red_retry:{red_status['retries']}"
             elif red_status.get("error"):
+                if note:
+                    note += "|"
                 note += f"red_error:{red_status['error']}"
         
         if blue_status:
@@ -530,7 +606,13 @@ class MPPIControlV2:
             print(f"🔴 红光PWM: {r_pwm:.2f} | 🔵 蓝光PWM: {b_pwm:.2f}")
             print(f"📈 预测温度: {next_temp:.2f} °C")
             print(f"⚡ 预测功率: {next_power:.2f} W")
-            print(f"🌱 预测光合速率: {next_pn:.3f} (目标Solar Vol: {self.target_solar_vol:.3f})")
+            if self.target_mean_power is not None:
+                print(
+                    f"🌱 预测光合速率: {next_pn:.3f} "
+                    f"(目标均值功率: {self.target_mean_power:.2f} W, 等效Solar Vol: {self.target_solar_vol:.3f})"
+                )
+            else:
+                print(f"🌱 预测光合速率: {next_pn:.3f}")
             print(f"💰 代价: {float(cost):.2f}")
 
         self._log_cycle(
@@ -546,6 +628,7 @@ class MPPIControlV2:
                 "pred_power": next_power,
                 "pred_pn": next_pn,
                 "target_solar_vol": self.target_solar_vol,
+                "target_mean_power": self.target_mean_power,
                 "cost": float(cost),
                 "success": True,
                 "note": note or "ok",

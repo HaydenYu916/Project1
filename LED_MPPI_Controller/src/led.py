@@ -9,6 +9,7 @@ from __future__ import annotations
 4. 前向步进接口 - MPPI 控制器使用的前向仿真
 """
 
+import copy
 import os
 import csv
 import math
@@ -21,8 +22,7 @@ import numpy as np
 # 热力学模型相关导入
 import pickle
 import json
-import numpy as np
-from typing import Optional, Literal
+from typing import Literal
 
 # =============================================================================
 # 模块 1: 新版热力学模型系统（基于Thermal目录）
@@ -52,6 +52,9 @@ class LedThermalParams:
     model_type: Literal["mlp", "thermal"] = "thermal"
     model_dir: str = "Thermal/exported_models"
     solar_threshold: float = 1.4  # Solar值阈值，用于判断升温/降温
+    solar_change_tolerance: float = 0.02
+    adaptive_enabled: bool = False
+    adaptive_params_path: str = ""
 
 class ThermalModelManager:
     """热力学模型管理器 - 管理MLP和纯热力学模型"""
@@ -61,16 +64,27 @@ class ThermalModelManager:
         self.model_dir = params.model_dir
         self.model_type = params.model_type
         self.solar_threshold = params.solar_threshold
+        self.solar_change_tolerance = params.solar_change_tolerance
+        self.adaptive_enabled = params.adaptive_enabled
+        self.adaptive_params_path = params.adaptive_params_path
         
         # 模型缓存
         self._heating_mlp_model = None
         self._cooling_mlp_model = None
+        self._base_heating_thermal_params = None
+        self._base_cooling_thermal_params = None
         self._heating_thermal_params = None
         self._cooling_thermal_params = None
+        self._runtime_params_mtime = None
+        self._runtime_metadata: Dict[str, object] = {}
+        self._active_parameter_source = "base"
         
         # 当前状态
         self.current_temp = params.base_ambient_temp
         self.current_solar = params.solar_threshold
+        self._phase_baseline_temp = self.current_temp
+        self._active_solar = self.current_solar
+        self._last_heating_solar = self.current_solar
         
         # 时间累积状态
         self.elapsed_time_minutes = 0.0
@@ -138,29 +152,116 @@ class ThermalModelManager:
             cooling_thermal_path = os.path.join(self.model_dir, "cooling_thermal_model.json")
             
             with open(heating_thermal_path, 'r', encoding='utf-8') as f:
-                self._heating_thermal_params = json.load(f)
+                self._base_heating_thermal_params = json.load(f)
             with open(cooling_thermal_path, 'r', encoding='utf-8') as f:
-                self._cooling_thermal_params = json.load(f)
+                self._base_cooling_thermal_params = json.load(f)
+
+            self._restore_base_thermal_params()
+            self.refresh_runtime_parameters(force=True)
                 
         except Exception as e:
             raise RuntimeError(f"加载热力学模型失败: {e}")
+
+    def _restore_base_thermal_params(self) -> None:
+        self._heating_thermal_params = copy.deepcopy(self._base_heating_thermal_params)
+        self._cooling_thermal_params = copy.deepcopy(self._base_cooling_thermal_params)
+        self._active_parameter_source = "base"
+        self._runtime_metadata = {}
+
+    def _merge_phase_params(self, base_params: Optional[dict], override: Optional[dict]) -> Optional[dict]:
+        if base_params is None:
+            return None
+        merged = copy.deepcopy(base_params)
+        if not override:
+            return merged
+
+        parameters = merged.get("parameters", {})
+        override_parameters = override.get("parameters", {}) if isinstance(override, dict) else {}
+        for key, value in override_parameters.items():
+            if key in parameters and isinstance(value, (int, float)):
+                parameters[key] = float(value)
+
+        a1_ref = override.get("a1_ref") if isinstance(override, dict) else None
+        if isinstance(a1_ref, (int, float)):
+            merged["a1_ref"] = float(a1_ref)
+        return merged
+
+    def refresh_runtime_parameters(self, force: bool = False) -> bool:
+        """重新加载运行时参数覆盖文件。失败时保留当前可用模型。"""
+        if not self.adaptive_enabled or not self.adaptive_params_path:
+            if self._active_parameter_source != "base":
+                self._restore_base_thermal_params()
+                self._runtime_params_mtime = None
+                return True
+            return False
+
+        if not os.path.exists(self.adaptive_params_path):
+            if self._active_parameter_source != "base":
+                self._restore_base_thermal_params()
+                self._runtime_params_mtime = None
+                return True
+            return False
+
+        try:
+            current_mtime = os.path.getmtime(self.adaptive_params_path)
+            if not force and self._runtime_params_mtime == current_mtime:
+                return False
+
+            with open(self.adaptive_params_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as exc:
+            print(f"警告: 读取运行时热模型参数失败 ({exc})，继续使用当前参数")
+            return False
+
+        if not isinstance(payload, dict):
+            print("警告: 运行时热模型参数格式无效，继续使用当前参数")
+            return False
+
+        heating_override = payload.get("heating")
+        cooling_override = payload.get("cooling")
+
+        try:
+            self.apply_runtime_parameters_payload(payload, source="runtime")
+            self._runtime_params_mtime = current_mtime
+            return True
+        except Exception as exc:
+            print(f"警告: 应用运行时热模型参数失败 ({exc})，继续使用当前参数")
+            return False
+
+    def apply_runtime_parameters_payload(self, payload: dict, source: str = "manual") -> None:
+        heating_override = payload.get("heating")
+        cooling_override = payload.get("cooling")
+        self._heating_thermal_params = self._merge_phase_params(
+            self._base_heating_thermal_params, heating_override
+        )
+        self._cooling_thermal_params = self._merge_phase_params(
+            self._base_cooling_thermal_params, cooling_override
+        )
+        self._runtime_metadata = payload.get("meta", {}) if isinstance(payload.get("meta"), dict) else {}
+        self._active_parameter_source = source
     
     def _is_heating_phase(self, solar_val: float) -> bool:
         """判断是否为升温阶段"""
-        return solar_val > self.solar_threshold
+        return solar_val > 0.05
     
     def _predict_mlp(self, time_minutes: float, solar_val: float, is_heating: bool) -> float:
         """使用MLP模型预测温度差"""
         model = self._heating_mlp_model if is_heating else self._cooling_mlp_model
         if model is None:
-            raise RuntimeError(f"{'升温' if is_heating else '降温'}MLP模型未加载")
+            return self._predict_thermal(time_minutes, solar_val, is_heating)
         
         # MLP模型需要时间数组和Solar值数组
         time_array = np.array([time_minutes])
         solar_array = np.array([solar_val])
         
-        delta_temp = model.predict(time_array, solar_array)[0]
-        return float(delta_temp)
+        try:
+            delta_temp = model.predict(time_array, solar_array)[0]
+            if not np.isfinite(delta_temp):
+                raise ValueError("MLP预测结果非有限值")
+            return float(delta_temp)
+        except Exception as exc:
+            print(f"警告: MLP热模型推理失败 ({exc})，回退到纯热力学模型")
+            return self._predict_thermal(time_minutes, solar_val, is_heating)
     
     def _predict_thermal(self, time_minutes: float, solar_val: float, is_heating: bool) -> float:
         """使用纯热力学模型预测温度差"""
@@ -191,18 +292,57 @@ class ThermalModelManager:
             delta_temp = K1_solar * np.exp(-t / tau1) + K2_solar * np.exp(-t / tau2)
         
         return float(delta_temp)
+
+    def _predict_phase_delta(self, time_minutes: float, solar_val: float, is_heating: bool) -> float:
+        solar_value = float(solar_val)
+        if self.model_type == "mlp":
+            return self._predict_mlp(time_minutes, solar_value, is_heating)
+        return self._predict_thermal(time_minutes, solar_value, is_heating)
+
+    def _start_new_phase(self, phase: str, solar_val: float, active_solar: float) -> None:
+        self.last_phase = phase
+        self.elapsed_time_minutes = 0.0
+        self.current_solar = float(solar_val)
+        self._active_solar = float(active_solar)
+
+        if phase == "heating":
+            self._phase_baseline_temp = self.current_temp
+            return
+
+        delta0 = self._predict_phase_delta(0.0, active_solar, is_heating=False)
+        baseline = self.current_temp - delta0
+        self._phase_baseline_temp = max(self.params.base_ambient_temp, min(self.current_temp, baseline))
+
+    def _update_heating_level(self, solar_val: float) -> None:
+        """在持续开灯阶段调整输入强度，保持温度轨迹连续。"""
+        new_active_solar = float(solar_val)
+        if abs(new_active_solar - self._active_solar) <= self.solar_change_tolerance:
+            self.current_solar = float(solar_val)
+            self._active_solar = new_active_solar
+            self._last_heating_solar = new_active_solar
+            return
+
+        # 不重置 heating phase，只平移基线，使新输入下的响应曲线通过当前温度点。
+        current_delta_new = self._predict_phase_delta(self.elapsed_time_minutes, new_active_solar, True)
+        self._phase_baseline_temp = float(self.current_temp - current_delta_new)
+        self.current_solar = float(solar_val)
+        self._active_solar = new_active_solar
+        self._last_heating_solar = new_active_solar
     
     def step(self, power: float, dt: float, solar_vol: Optional[float] = None, control_change: Optional[float] = None) -> float:
-        """热力学步进 - 支持基于控制量变化判断升温/降温"""
+        """热力学步进。
+
+        在持续开灯阶段仅更新 heating level，不再因每次 control change 重置 phase，
+        以避免温度基线累积抬升；但 phase 判断仍优先尊重 control_change。
+        """
         # 使用Solar Vol或默认值
-        solar_val = solar_vol if solar_vol is not None else self.current_solar
-        
-        # 🔥 基于控制量变化判断升温/降温阶段
-        if control_change is not None:
-            # MPPI控制量变化: u0 - u1
-            is_heating = control_change > 0  # 控制量增加 → 升温
+        solar_val = float(solar_vol) if solar_vol is not None else float(self.current_solar)
+
+        if control_change is not None and abs(float(control_change)) > self.solar_change_tolerance:
+            is_heating = float(control_change) > 0
+        elif self.last_phase is not None and abs(solar_val - self.current_solar) <= self.solar_change_tolerance:
+            is_heating = self.last_phase == "heating"
         else:
-            # 回退到Solar值判断
             is_heating = self._is_heating_phase(solar_val)
         
         # 转换时间单位（秒转分钟）
@@ -210,30 +350,34 @@ class ThermalModelManager:
         
         # 检查Solar电压或阶段是否改变
         current_phase = 'heating' if is_heating else 'cooling'
-        solar_changed = abs(solar_val - self.current_solar) > 1e-6
+        if current_phase == "heating":
+            active_solar = solar_val
+            self._last_heating_solar = solar_val
+        else:
+            active_solar = self._last_heating_solar if self._last_heating_solar > 0 else max(solar_val, self.solar_threshold)
+
         phase_changed = self.last_phase != current_phase
-        
-        if solar_changed or phase_changed:
-            # Solar电压或阶段改变，重置时间累积
-            self.elapsed_time_minutes = 0.0
-            self.last_phase = current_phase
+
+        if phase_changed:
+            self._start_new_phase(current_phase, solar_val, active_solar)
+        elif current_phase == "heating":
+            self._update_heating_level(solar_val)
+        else:
+            self.current_solar = float(solar_val)
+            self._active_solar = float(active_solar)
         
         # 计算累积时间
         self.elapsed_time_minutes += dt_minutes
         
         # 预测温度差（基于累积时间）
-        if self.model_type == "mlp":
-            delta_temp = self._predict_mlp(self.elapsed_time_minutes, solar_val, is_heating)
-        else:
-            delta_temp = self._predict_thermal(self.elapsed_time_minutes, solar_val, is_heating)
+        delta_temp = self._predict_phase_delta(self.elapsed_time_minutes, active_solar, is_heating)
         
-        # 更新温度（热力学模型预测的是相对于环境温度的温差）
-        ambient_temp = self.params.base_ambient_temp
-        new_temp = ambient_temp + delta_temp
+        new_temp = self._phase_baseline_temp + delta_temp
         
         # 更新状态
         self.current_temp = new_temp
         self.current_solar = solar_val
+        self._active_solar = active_solar
         
         return new_temp
     
@@ -241,9 +385,19 @@ class ThermalModelManager:
         """重置模型状态"""
         self.current_temp = ambient_temp if ambient_temp is not None else self.params.base_ambient_temp
         self.current_solar = self.solar_threshold
+        self._phase_baseline_temp = self.current_temp
+        self._active_solar = self.current_solar
+        self._last_heating_solar = self.current_solar
         # 重置时间累积状态
         self.elapsed_time_minutes = 0.0
         self.last_phase = None
+
+    def sync_observation(self, observed_temp: float) -> None:
+        """用观测温度校正当前状态，不丢失当前阶段信息。"""
+        observed = float(observed_temp)
+        delta = observed - self.current_temp
+        self.current_temp = observed
+        self._phase_baseline_temp += delta
     
     @property
     def ambient_temp(self) -> float:
@@ -251,7 +405,7 @@ class ThermalModelManager:
     
     @ambient_temp.setter
     def ambient_temp(self, value: float):
-        self.current_temp = float(value)
+        self.sync_observation(float(value))
     
     @property
     def supports_solar_input(self) -> bool:
@@ -265,15 +419,19 @@ class ThermalModelManager:
         """基于Solar Vol的目标温度"""
         is_heating = self._is_heating_phase(solar_vol)
         # 使用稳态温度差作为目标
-        if self.model_type == "mlp":
-            delta_temp = self._predict_mlp(1000.0, solar_vol, is_heating)  # 长时间预测
-        else:
-            delta_temp = self._predict_thermal(1000.0, solar_vol, is_heating)
-        
-        if is_heating:
-            return self.params.base_ambient_temp + delta_temp
-        else:
-            return self.params.base_ambient_temp - delta_temp
+        delta_temp = self._predict_phase_delta(1000.0, solar_vol, is_heating)
+        return self.params.base_ambient_temp + max(0.0, delta_temp)
+
+    def get_model_info(self) -> dict:
+        return {
+            "model_type": self.model_type,
+            "solar_threshold": self.solar_threshold,
+            "base_ambient_temp": self.params.base_ambient_temp,
+            "parameter_source": self._active_parameter_source,
+            "elapsed_time_minutes": self.elapsed_time_minutes,
+            "phase": self.last_phase,
+            "runtime_metadata": self._runtime_metadata,
+        }
 
 # 兼容性别名
 BaseThermalModel = ThermalModelManager
@@ -299,7 +457,10 @@ class Led:
                 efficiency_decay=params.efficiency_decay,
                 model_type=model_type,
                 model_dir=params.model_dir,
-                solar_threshold=params.solar_threshold
+                solar_threshold=params.solar_threshold,
+                solar_change_tolerance=params.solar_change_tolerance,
+                adaptive_enabled=params.adaptive_enabled,
+                adaptive_params_path=params.adaptive_params_path,
             )
         self.params = params_obj
         self.model = ThermalModelManager(params_obj)
@@ -336,8 +497,25 @@ class Led:
 
 def create_model(model_type: str = "thermal", params: Optional[LedThermalParams] = None) -> ThermalModelManager:
     """创建热力学模型"""
-    params_obj = params or LedThermalParams()
-    params_obj.model_type = model_type
+    if params is None:
+        params_obj = LedThermalParams(model_type=model_type)
+    else:
+        params_obj = LedThermalParams(
+            base_ambient_temp=params.base_ambient_temp,
+            thermal_resistance=params.thermal_resistance,
+            time_constant_s=params.time_constant_s,
+            thermal_mass=params.thermal_mass,
+            max_ppfd=params.max_ppfd,
+            max_power=params.max_power,
+            led_efficiency=params.led_efficiency,
+            efficiency_decay=params.efficiency_decay,
+            model_type=model_type,
+            model_dir=params.model_dir,
+            solar_threshold=params.solar_threshold,
+            solar_change_tolerance=params.solar_change_tolerance,
+            adaptive_enabled=params.adaptive_enabled,
+            adaptive_params_path=params.adaptive_params_path,
+        )
     return ThermalModelManager(params_obj)
 
 def create_default_params() -> LedThermalParams:

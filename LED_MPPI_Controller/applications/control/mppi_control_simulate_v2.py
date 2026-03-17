@@ -18,7 +18,8 @@ import numpy as np
 
 CONTROL_INTERVAL_MINUTES = 15.0
 DEFAULT_TARGET_SOLAR_VOL = 1.6
-DEFAULT_REFERENCE_WEIGHT = 25.0
+DEFAULT_REFERENCE_WEIGHT = 0.0
+DEFAULT_POWER_BUDGET_WEIGHT = 25.0
 RB_RATIO = 0.83
 
 # 项目路径设置
@@ -66,6 +67,7 @@ class MPPISimulationV2:
         temperature: float = 1.0,
         u_std: float = 0.25,
         reference_weight: float = DEFAULT_REFERENCE_WEIGHT,
+        power_budget_weight: float = DEFAULT_POWER_BUDGET_WEIGHT,
         target_solar_vol: Optional[float] = DEFAULT_TARGET_SOLAR_VOL,
     ) -> None:
         ensure_log_dir()
@@ -73,6 +75,8 @@ class MPPISimulationV2:
         self.dt_seconds = self.control_interval_minutes * 60.0
         self.target_solar_vol = float(target_solar_vol) if target_solar_vol is not None else None
         self.reference_weight = float(reference_weight)
+        self.power_budget_weight = float(power_budget_weight)
+        self.target_mean_power: Optional[float] = None
         self.co2_fallback = float(DEFAULT_CO2_PPM)
         self.r_b_ratio = RB_RATIO
 
@@ -103,8 +107,13 @@ class MPPISimulationV2:
         self.controller.set_weights(
             Q_photo=25.0,
             R_du=0.02,
-            R_power=0.005,
+            R_power=0.0,
             Q_ref=self.reference_weight,
+        )
+        self.target_mean_power = self._estimate_target_mean_power()
+        self.controller.set_power_budget(
+            target_mean_power=self.target_mean_power,
+            power_budget_weight=self.power_budget_weight,
         )
         self.controller.set_mppi_params(u_std=u_std, dt=self.dt_seconds)
 
@@ -118,6 +127,14 @@ class MPPISimulationV2:
             raise FileNotFoundError(f"Power calibration file missing: {calib_csv}")
         model = PWMtoPowerModel(include_intercept=True)
         return model.fit(calib_csv)
+
+    def _estimate_target_mean_power(self) -> Optional[float]:
+        if self.target_solar_vol is None:
+            return None
+        r_pwm, b_pwm = self.plant._solar_vol_to_pwm(float(self.target_solar_vol))
+        total_pwm = float(r_pwm + b_pwm)
+        power_key = self.plant._get_power_model_key(self.plant.r_b_ratio)
+        return float(self.plant.power_model.predict(total_pwm=total_pwm, key=power_key))
 
     def _init_log(self) -> None:
         if not os.path.exists(LOG_FILE):
@@ -136,6 +153,7 @@ class MPPISimulationV2:
                         "pred_power",
                         "pred_pn",
                         "target_solar_vol",
+                        "target_mean_power",
                         "cost",
                         "success",
                         "note",
@@ -175,6 +193,7 @@ class MPPISimulationV2:
                     row.get("pred_power"),
                     row.get("pred_pn"),
                     row.get("target_solar_vol"),
+                    row.get("target_mean_power"),
                     row.get("cost"),
                     row.get("success"),
                     row.get("note"),
@@ -187,10 +206,17 @@ class MPPISimulationV2:
             return None
         return np.full(self.controller.horizon, self.target_solar_vol, dtype=float)
 
+    def _make_mean_sequence(self) -> Optional[np.ndarray]:
+        if self.target_solar_vol is None:
+            return None
+        return np.full(self.controller.horizon, self.target_solar_vol, dtype=float)
+
     def run_cycle(self, cycle_index: int) -> Dict[str, Any]:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         env = self._read_sensors()
         measured_temp = env.get("temp")
+        if env.get("co2") is not None:
+            self.plant.co2_ppm = float(env["co2"])
 
         if measured_temp is not None:
             self.current_sim_temp = measured_temp
@@ -198,6 +224,7 @@ class MPPISimulationV2:
             self.current_sim_temp = 25.0
 
         current_temp = float(self.current_sim_temp)
+        mean_sequence = self._make_mean_sequence()
         solar_vol_ref = self._make_solar_vol_reference()
         solar_ref_list = solar_vol_ref.tolist() if solar_vol_ref is not None else None
         notes: list[str] = []
@@ -208,6 +235,7 @@ class MPPISimulationV2:
         try:
             optimal_sv, optimal_seq, success, cost, _weights = self.controller.solve(
                 current_temp=current_temp,
+                mean_sequence=mean_sequence,
                 solar_vol_ref_seq=solar_vol_ref,
             )
         except Exception as exc:  # noqa: BLE001
@@ -224,6 +252,7 @@ class MPPISimulationV2:
                 "pred_power": None,
                 "pred_pn": None,
                 "target_solar_vol": self.target_solar_vol,
+                "target_mean_power": self.target_mean_power,
                 "cost": None,
                 "success": False,
                 "note": "|".join(notes) if notes else "solve_exception",
@@ -247,6 +276,7 @@ class MPPISimulationV2:
                 "pred_power": None,
                 "pred_pn": None,
                 "target_solar_vol": self.target_solar_vol,
+                "target_mean_power": self.target_mean_power,
                 "cost": float(cost),
                 "success": False,
                 "note": "|".join(notes),
@@ -285,6 +315,7 @@ class MPPISimulationV2:
             "pred_power": next_power,
             "pred_pn": next_pn,
             "target_solar_vol": self.target_solar_vol,
+            "target_mean_power": self.target_mean_power,
             "cost": float(cost),
             "success": True,
             "note": "|".join(notes) if notes else "ok",
@@ -325,8 +356,14 @@ class MPPISimulationV2:
         print(f"🔴 红光PWM: {row['r_pwm']:.2f} | 🔵 蓝光PWM: {row['b_pwm']:.2f}")
         print(f"📈 预测温度: {row['pred_temp']:.2f} °C")
         print(f"⚡ 预测功率: {row['pred_power']:.2f} W")
+        target_power = row.get("target_mean_power")
         target_sv = row.get("target_solar_vol")
-        if target_sv is not None:
+        if target_power is not None and target_sv is not None:
+            print(
+                f"🌱 预测光合速率: {row['pred_pn']:.3f} "
+                f"(目标均值功率: {target_power:.2f} W, 等效Solar Vol: {target_sv:.3f})"
+            )
+        elif target_sv is not None:
             print(f"🌱 预测光合速率: {row['pred_pn']:.3f} (目标Solar Vol: {target_sv:.3f})")
         else:
             print(f"🌱 预测光合速率: {row['pred_pn']:.3f}")
@@ -393,6 +430,12 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_REFERENCE_WEIGHT,
         help=f"Solar Vol 参考误差惩罚权重 (Q_ref)，默认 {DEFAULT_REFERENCE_WEIGHT}",  # 参考跟踪权重
     )
+    parser.add_argument(
+        "--power-budget-weight",
+        type=float,
+        default=DEFAULT_POWER_BUDGET_WEIGHT,
+        help=f"平均功率预算惩罚权重，默认 {DEFAULT_POWER_BUDGET_WEIGHT}",
+    )
     return parser.parse_args()
 
 
@@ -407,6 +450,7 @@ def main() -> None:
         u_std=args.ustd,
         target_solar_vol=args.target_solar,
         reference_weight=args.ref_weight,
+        power_budget_weight=args.power_budget_weight,
     )
     sim.run(args.steps)
 

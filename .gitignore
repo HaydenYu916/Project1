@@ -41,6 +41,7 @@ MANIFEST
 Thumbs.db
 
 # Logs - 不上传logs目录下的文件
+!log/
 logs/
 *.log
 *.log.*

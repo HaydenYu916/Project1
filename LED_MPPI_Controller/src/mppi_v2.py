@@ -120,6 +120,8 @@ class LEDPlant:
         use_solar_vol_model=True,
         thermal_model_type: str = "thermal",  # "mlp" 或 "thermal"
         model_dir: str = "Thermal/exported_models",  # 模型文件目录
+        adaptive_thermal_enabled: bool = False,
+        adaptive_thermal_params_path: str = "",
     ):
         self.base_ambient_temp = base_ambient_temp
         self.max_solar_vol = max_solar_vol
@@ -130,6 +132,8 @@ class LEDPlant:
         self.use_solar_vol_model = use_solar_vol_model
         self.thermal_model_type = thermal_model_type
         self.model_dir = model_dir
+        self.adaptive_thermal_enabled = adaptive_thermal_enabled
+        self.adaptive_thermal_params_path = adaptive_thermal_params_path
         
         # MPPI控制状态跟踪
         self.current_control = 0.0  # 当前控制量u0
@@ -146,6 +150,8 @@ class LEDPlant:
             model_type=thermal_model_type,
             model_dir=model_dir,
             solar_threshold=1.4,  # 添加Solar阈值
+            adaptive_enabled=adaptive_thermal_enabled,
+            adaptive_params_path=adaptive_thermal_params_path,
         )
         
         # 🔥 使用新版热力学模型管理器
@@ -515,6 +521,9 @@ class LEDPlant:
 
     def get_thermal_model_info(self):
         """获取热力学模型信息"""
+        runtime_info = {}
+        if hasattr(self.thermal_model, "get_model_info"):
+            runtime_info = self.thermal_model.get_model_info()
         return {
             "model_type": self.thermal_model_type,
             "model_dir": self.model_dir,
@@ -522,7 +531,14 @@ class LEDPlant:
             "current_temp": self.thermal_model.ambient_temp,
             "current_control": self.current_control,
             "previous_control": self.previous_control,
+            **runtime_info,
         }
+
+    def refresh_thermal_model_runtime_parameters(self) -> bool:
+        """刷新运行时热模型参数覆盖。"""
+        if hasattr(self.thermal_model, "refresh_runtime_parameters"):
+            return bool(self.thermal_model.refresh_runtime_parameters(force=True))
+        return False
     
     def reset_thermal_model(self, ambient_temp=None):
         """重置热力学模型状态"""
@@ -553,6 +569,9 @@ class LEDPlant:
             model_type=model_type,
             model_dir=self.thermal_params.model_dir,
             solar_threshold=self.thermal_params.solar_threshold,
+            solar_change_tolerance=self.thermal_params.solar_change_tolerance,
+            adaptive_enabled=self.thermal_params.adaptive_enabled,
+            adaptive_params_path=self.thermal_params.adaptive_params_path,
         )
         
         # 重新创建热力学模型
@@ -577,6 +596,8 @@ class LEDMPPIController:
         self.Q_ref = 0.0
         self.R_du = 0.05
         self.R_power = 0.05
+        self.target_mean_power = None
+        self.power_budget_weight = 0.0
 
         self.u_min = 1.0  # 实际数据最低约1.2V，设置1.0V作为安全边界
         self.u_max = float(getattr(self.plant, "max_solar_vol", 2.0))  # 支持到2.0V
@@ -598,6 +619,14 @@ class LEDMPPIController:
             self.R_power = float(R_power)
         if Q_ref is not None:
             self.Q_ref = float(Q_ref)
+
+    def set_power_budget(self, target_mean_power=None, power_budget_weight=None):
+        if target_mean_power is None:
+            self.target_mean_power = None
+        else:
+            self.target_mean_power = float(target_mean_power)
+        if power_budget_weight is not None:
+            self.power_budget_weight = float(power_budget_weight)
 
     def set_constraints(self, u_min=None, u_max=None, temp_min=None, temp_max=None):
         if u_min is not None:
@@ -663,6 +692,11 @@ class LEDMPPIController:
             under = np.maximum(0.0, self.temp_min - temp_pred)
             cost += self.temp_penalty * float(np.sum(over**2 + under**2))
 
+            if self.target_mean_power is not None and self.power_budget_weight > 0.0:
+                mean_power = float(np.mean(power_pred))
+                power_diff = mean_power - float(self.target_mean_power)
+                cost += self.power_budget_weight * float(power_diff**2)
+
             cost += self.R_power * float(np.sum(power_pred**2))
 
             du = np.diff(np.concatenate([[self.u_prev], u_seq]))
@@ -716,6 +750,7 @@ class LEDMPPIController:
             _sv, t_check, _pw, _pn, _r, _b = self.plant.predict([optimal_u], current_temp, dt=self.dt)
             if t_check[0] > self.temp_max:
                 optimal_u = max(self.u_min, optimal_u * 0.7)
+                optimal_seq[0] = optimal_u
         except Exception:
             pass
 
