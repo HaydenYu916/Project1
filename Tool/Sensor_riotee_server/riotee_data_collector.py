@@ -44,15 +44,16 @@ stats = {"packets_received": 0, "mqtt_success": 0, "errors": 0}
 # Packet format constants
 PKT_MAGIC = 0xAA
 PKT_BASIC, PKT_SPECTRAL, PKT_FULL, PKT_BASIC_CO2 = 0x01, 0x02, 0x03, 0x04
+CO2_STATE_INVALID, CO2_STATE_HOLD, CO2_STATE_FRESH = 0, 1, 2
 
 # CSV fieldnames
 FIELDNAMES = ['id', 'timestamp', 'device_id', 'update_type', 'temperature', 'humidity',
-              'a1_raw', 'vcap_raw', 'co2_ppm', 'sp_415', 'sp_445', 'sp_480', 'sp_515',
+              'a1_raw', 'vcap_raw', 'co2_ppm', 'co2_state', 'sp_415', 'sp_445', 'sp_480', 'sp_515',
               'sp_555', 'sp_590', 'sp_630', 'sp_680', 'sp_clear', 'sp_nir',
               'spectral_gain', 'sleep_time']
 
 SUMMARY_FIELDS = ['id', 'timestamp', 'device_id', 'update_type', 'temperature', 
-                  'humidity', 'a1_raw', 'vcap_raw', 'co2_ppm', 'spectral_gain', 'sleep_time']
+                  'humidity', 'a1_raw', 'vcap_raw', 'co2_ppm', 'co2_state', 'spectral_gain', 'sleep_time']
 
 STATE_FILE = "current_led_state.json"
 PENDING_COMMENT_FILE = "pending_segment_comment.json"
@@ -65,13 +66,22 @@ def gain_to_mult(g):
     return {0:0.5,1:1,2:2,3:4,4:8,5:16,6:32,7:64,8:128,9:256,10:512}.get(int(g), 0)
 
 
-def describe_co2_state(pkt_type, co2):
-    """Map packet contents to host-side CO2 freshness."""
-    if pkt_type in (PKT_FULL, PKT_BASIC_CO2):
-        return "CO2 fresh" if co2 >= 0 else "CO2 payload invalid"
+def describe_co2_state(state_code):
+    """Map compact-packet state code to a host-readable label."""
+    return {
+        CO2_STATE_INVALID: "INVALID",
+        CO2_STATE_HOLD: "HOLD",
+        CO2_STATE_FRESH: "FRESH",
+    }.get(state_code, "UNKNOWN")
+
+
+def infer_legacy_co2_state(pkt_type, co2):
+    """Backward-compatible state mapping for older compact packets."""
+    if pkt_type in (PKT_FULL, PKT_BASIC_CO2) and co2 >= 0:
+        return "FRESH"
     if pkt_type in (PKT_BASIC, PKT_SPECTRAL):
-        return "CO2 unchanged"
-    return "CO2 state unknown"
+        return "INVALID"
+    return "UNKNOWN"
 
 # ============ MQTT ============
 def setup_mqtt():
@@ -150,6 +160,7 @@ def ensure_ha_discovery(device_id):
         ("a1_raw", "a1_raw", "V", "mdi:current-ac"),
         ("vcap_raw", "vcap_raw", "V", "mdi:flash"),
         ("co2_ppm", "co2_ppm", "ppm", "mdi:molecule-co2"),
+        ("co2_state", "co2_state", "", "mdi:update"),
         ("spectral_gain", "spectral_gain", "", "mdi:tune-vertical-variant"),
         ("sleep_time", "sleep_time", "s", "mdi:sleep"),
         ("sp_415", "sp_415", "count", "mdi:chart-bell-curve"),
@@ -313,7 +324,7 @@ def maybe_write_control_comment():
         logging.error(f"CSV comment write error: {e}")
 
 # ============ Data Processing ============
-def write_record(device_id, update_type, temp, hum, a1, vcap, co2, spectrum, gain, sleep, co2_status=None):
+def write_record(device_id, update_type, temp, hum, a1, vcap, co2, co2_state, spectrum, gain, sleep):
     """Write data to CSV and JSON"""
     global record_id
     record_id += 1
@@ -321,7 +332,7 @@ def write_record(device_id, update_type, temp, hum, a1, vcap, co2, spectrum, gai
     gain_mult = gain_to_mult(gain)
     last = device_last_state.get(device_id, {})
     last_valid_co2 = last.get('last_valid_co2', -1)
-    current_co2 = co2 if co2 >= 0 else last_valid_co2
+    current_co2 = co2 if co2 >= 0 else -1
     
     read_control_state()
     maybe_write_control_comment()
@@ -331,7 +342,8 @@ def write_record(device_id, update_type, temp, hum, a1, vcap, co2, spectrum, gai
         'id': record_id, 'timestamp': ts, 'device_id': device_id, 'update_type': update_type,
         'temperature': f"{temp:.2f}", 'humidity': f"{hum:.2f}",
         'a1_raw': f"{a1:.3f}", 'vcap_raw': f"{vcap:.3f}",
-        'co2_ppm': co2 if co2 >= 0 else '',
+        'co2_ppm': co2,
+        'co2_state': co2_state,
         'spectral_gain': gain_mult, 'sleep_time': sleep,
     }
     row.update({k: f"{v:.2f}" for k, v in spectrum.items()})
@@ -362,22 +374,19 @@ def write_record(device_id, update_type, temp, hum, a1, vcap, co2, spectrum, gai
         publish_mqtt(f"riotee/{dev}/sleep_time", sleep)
         for channel, value in spectrum.items():
             publish_mqtt(f"riotee/{dev}/{channel}", f"{value:.2f}")
-        if co2 >= 0:
-            publish_mqtt(f"riotee/{dev}/co2_ppm", co2)
+        publish_mqtt(f"riotee/{dev}/co2_ppm", current_co2)
+        publish_mqtt(f"riotee/{dev}/co2_state", co2_state)
     
-    co2_value = f"{co2}ppm" if co2 >= 0 else "N/A"
+    co2_value = f"{co2}ppm" if co2 >= 0 else "-1"
     last_co2_value = f"{current_co2}ppm" if current_co2 >= 0 else "N/A"
-    if co2_status:
-        logging.info(
-            f"{device_id}: T={temp:.1f}C H={hum:.1f}% CO2={co2_value} ({co2_status}, last_valid={last_co2_value}) Sleep={sleep}s"
-        )
-    else:
-        logging.info(f"{device_id}: T={temp:.1f}C H={hum:.1f}% CO2={co2_value} Sleep={sleep}s")
+    logging.info(
+        f"{device_id}: T={temp:.1f}C H={hum:.1f}% CO2={co2_value} ({co2_state}, last_valid={last_co2_value}) Sleep={sleep}s"
+    )
 
     device_last_state[device_id] = {
         'temp': temp,
         'sleep': sleep,
-        'last_valid_co2': current_co2,
+        'last_valid_co2': co2 if co2 >= 0 else last_valid_co2,
     }
 
 def process_compact(device_id, raw):
@@ -385,9 +394,23 @@ def process_compact(device_id, raw):
     if len(raw) < 12 or raw[0] != PKT_MAGIC: return
     
     pkt_type = raw[1]
+    base_len = 12
+    co2_state = "UNKNOWN"
     try:
-        temp_x100, hum_x100, a1_mv, vcap_mv, sleep, gain = struct.unpack('<hHHHBB', raw[2:12].tobytes())
-    except: return
+        expected_new_len = {
+            PKT_BASIC: 13,
+            PKT_SPECTRAL: 33,
+            PKT_FULL: 35,
+            PKT_BASIC_CO2: 15,
+        }.get(pkt_type)
+        if expected_new_len is not None and len(raw) >= expected_new_len:
+            temp_x100, hum_x100, a1_mv, vcap_mv, sleep, gain, co2_state_code = struct.unpack('<hHHHBBB', raw[2:13].tobytes())
+            base_len = 13
+            co2_state = describe_co2_state(co2_state_code)
+        else:
+            temp_x100, hum_x100, a1_mv, vcap_mv, sleep, gain = struct.unpack('<hHHHBB', raw[2:12].tobytes())
+    except:
+        return
     
     temp, hum = temp_x100/100.0, hum_x100/100.0
     a1, vcap = a1_mv/1000.0, vcap_mv/1000.0
@@ -396,23 +419,24 @@ def process_compact(device_id, raw):
     spectrum.update({'sp_clear': 0.0, 'sp_nir': 0.0})
     co2 = -1
     
-    if pkt_type in (PKT_SPECTRAL, PKT_FULL) and len(raw) >= 32:
+    if pkt_type in (PKT_SPECTRAL, PKT_FULL) and len(raw) >= (base_len + 20):
         try:
-            arr = struct.unpack('<10H', raw[12:32].tobytes())
+            arr = struct.unpack('<10H', raw[base_len:base_len + 20].tobytes())
             for i, wl in enumerate([415,445,480,515,555,590,630,680]):
                 spectrum[f'sp_{wl}'] = float(arr[i])
             spectrum['sp_clear'], spectrum['sp_nir'] = float(arr[8]), float(arr[9])
         except: pass
     
-    if pkt_type == PKT_FULL and len(raw) >= 34:
-        try: co2 = struct.unpack('<h', raw[32:34].tobytes())[0]
+    if pkt_type == PKT_FULL and len(raw) >= (base_len + 22):
+        try: co2 = struct.unpack('<h', raw[base_len + 20:base_len + 22].tobytes())[0]
         except: pass
-    elif pkt_type == PKT_BASIC_CO2 and len(raw) >= 14:
-        try: co2 = struct.unpack('<h', raw[12:14].tobytes())[0]
+    elif pkt_type == PKT_BASIC_CO2 and len(raw) >= (base_len + 2):
+        try: co2 = struct.unpack('<h', raw[base_len:base_len + 2].tobytes())[0]
         except: pass
     
-    co2_status = describe_co2_state(pkt_type, co2)
-    write_record(device_id, "COMPACT", temp, hum, a1, vcap, co2, spectrum, gain, sleep, co2_status=co2_status)
+    if base_len == 12:
+        co2_state = infer_legacy_co2_state(pkt_type, co2)
+    write_record(device_id, "COMPACT", temp, hum, a1, vcap, co2, co2_state, spectrum, gain, sleep)
 
 def process_float(device_id, data):
     """Process float32 array packet (17 floats: 4 basic + 2 config + 10 spectrum + 1 co2)"""
@@ -428,6 +452,7 @@ def process_float(device_id, data):
             'sp_clear': data[14], 'sp_nir': data[15]
         }
         co2 = int(data[16]) if data[16] >= 0 else -1
+        co2_state = "FRESH" if co2 >= 0 else "INVALID"
     elif len(data) >= 16:
         sleep, gain = int(data[4]), int(data[5])
         spectrum = {
@@ -436,12 +461,14 @@ def process_float(device_id, data):
             'sp_clear': data[14], 'sp_nir': data[15]
         }
         co2 = -1
+        co2_state = "INVALID"
     else:
         sleep, gain, co2 = 0, 255, -1
         spectrum = {f'sp_{wl}': 0.0 for wl in [415,445,480,515,555,590,630,680]}
         spectrum.update({'sp_clear': 0.0, 'sp_nir': 0.0})
+        co2_state = "INVALID"
     
-    write_record(device_id, "FLOAT", temp, hum, a1, vcap, co2, spectrum, gain, sleep)
+    write_record(device_id, "FLOAT", temp, hum, a1, vcap, co2, co2_state, spectrum, gain, sleep)
 
 # ============ Main ============
 def main():

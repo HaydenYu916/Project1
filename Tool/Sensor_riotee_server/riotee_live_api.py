@@ -148,6 +148,31 @@ def _read_csv_data(csv_path: str, limit: Optional[int] = None) -> List[Dict[str,
     return rows
 
 
+def _resolve_co2_fields(rows: List[Dict[str, Any]], target_index: int) -> Tuple[Optional[float], Optional[float], str, bool]:
+    """Return (effective_co2, raw_co2, co2_state, is_fresh) for the target row."""
+    if target_index < 0 or target_index >= len(rows):
+        return None, None, "UNKNOWN", False
+
+    row = rows[target_index]
+    device_id = row.get("device_id", "")
+    row_state = str(row.get("co2_state", "")).strip().upper()
+    raw_co2 = _safe_float(row.get("co2_ppm"))
+    if row_state in {"INVALID", "HOLD", "FRESH"}:
+        return raw_co2, raw_co2, row_state, row_state == "FRESH"
+    if raw_co2 is not None:
+        return raw_co2, raw_co2, "FRESH", True
+
+    for idx in range(target_index - 1, -1, -1):
+        prev = rows[idx]
+        if prev.get("device_id", "") != device_id:
+            continue
+        prev_co2 = _safe_float(prev.get("co2_ppm"))
+        if prev_co2 is not None:
+            return prev_co2, None, "HOLD", False
+
+    return None, None, "INVALID", False
+
+
 def get_latest_data(include_spectral: bool = True, 
                    include_config: bool = True) -> Optional[Dict[str, Any]]:
     """
@@ -166,11 +191,12 @@ def get_latest_data(include_spectral: bool = True,
     if not csv_path:
         return None
     
-    rows = _read_csv_data(csv_path, limit=1)
+    rows = _read_csv_data(csv_path, limit=200)
     if not rows:
         return None
     
-    row = rows[-1]  # 最后一行
+    row_index = len(rows) - 1
+    row = rows[row_index]  # 最后一行
     
     # 构建返回数据
     result = {
@@ -184,6 +210,11 @@ def get_latest_data(include_spectral: bool = True,
         'a1_raw': _safe_float(row.get('a1_raw')),
         'vcap_raw': _safe_float(row.get('vcap_raw')),
     }
+    effective_co2, raw_co2, co2_state, co2_fresh = _resolve_co2_fields(rows, row_index)
+    result['co2_ppm'] = effective_co2
+    result['co2_raw_ppm'] = raw_co2
+    result['co2_state'] = co2_state
+    result['co2_fresh'] = co2_fresh
     
     # 添加光谱数据
     if include_spectral:
@@ -238,7 +269,8 @@ def get_device_latest_data(device_id: str,
     rows = _read_csv_data(csv_path, limit=100)
     
     # 反向查找指定设备的最新记录
-    for row in reversed(rows):
+    for idx in range(len(rows) - 1, -1, -1):
+        row = rows[idx]
         if row.get('device_id') == device_id:
             result = {
                 '_csv_file': os.path.basename(csv_path),
@@ -251,6 +283,11 @@ def get_device_latest_data(device_id: str,
                 'a1_raw': _safe_float(row.get('a1_raw')),
                 'vcap_raw': _safe_float(row.get('vcap_raw')),
             }
+            effective_co2, raw_co2, co2_state, co2_fresh = _resolve_co2_fields(rows, idx)
+            result['co2_ppm'] = effective_co2
+            result['co2_raw_ppm'] = raw_co2
+            result['co2_state'] = co2_state
+            result['co2_fresh'] = co2_fresh
             
             if include_spectral:
                 spectral_data = {}
@@ -306,7 +343,7 @@ def get_recent_data(count: int = 10,
         rows = rows[-count:] if len(rows) > count else rows
     
     result = []
-    for row in rows:
+    for idx, row in enumerate(rows):
         item = {
             'id': row.get('id', ''),
             'timestamp': row.get('timestamp', ''),
@@ -318,6 +355,11 @@ def get_recent_data(count: int = 10,
             'spectral_gain': _safe_float(row.get('spectral_gain')),
             'sleep_time': _safe_int(row.get('sleep_time'))
         }
+        effective_co2, raw_co2, co2_state, co2_fresh = _resolve_co2_fields(rows, idx)
+        item['co2_ppm'] = effective_co2
+        item['co2_raw_ppm'] = raw_co2
+        item['co2_state'] = co2_state
+        item['co2_fresh'] = co2_fresh
         result.append(item)
     
     return result
