@@ -64,6 +64,15 @@ def gain_to_mult(g):
     """Convert gain code (0-10) to multiplier"""
     return {0:0.5,1:1,2:2,3:4,4:8,5:16,6:32,7:64,8:128,9:256,10:512}.get(int(g), 0)
 
+
+def describe_co2_state(pkt_type, co2):
+    """Map packet contents to host-side CO2 freshness."""
+    if pkt_type in (PKT_FULL, PKT_BASIC_CO2):
+        return "CO2 fresh" if co2 >= 0 else "CO2 payload invalid"
+    if pkt_type in (PKT_BASIC, PKT_SPECTRAL):
+        return "CO2 unchanged"
+    return "CO2 state unknown"
+
 # ============ MQTT ============
 def setup_mqtt():
     try:
@@ -304,12 +313,15 @@ def maybe_write_control_comment():
         logging.error(f"CSV comment write error: {e}")
 
 # ============ Data Processing ============
-def write_record(device_id, update_type, temp, hum, a1, vcap, co2, spectrum, gain, sleep):
+def write_record(device_id, update_type, temp, hum, a1, vcap, co2, spectrum, gain, sleep, co2_status=None):
     """Write data to CSV and JSON"""
     global record_id
     record_id += 1
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
     gain_mult = gain_to_mult(gain)
+    last = device_last_state.get(device_id, {})
+    last_valid_co2 = last.get('last_valid_co2', -1)
+    current_co2 = co2 if co2 >= 0 else last_valid_co2
     
     read_control_state()
     maybe_write_control_comment()
@@ -331,15 +343,12 @@ def write_record(device_id, update_type, temp, hum, a1, vcap, co2, spectrum, gai
         logging.error(f"CSV write error: {e}")
     
     # Summary (on significant change)
-    last = device_last_state.get(device_id, {})
     if not last or abs(temp - last.get('temp', temp)) > 0.5 or sleep != last.get('sleep', sleep):
         summary_row = {k: row[k] for k in SUMMARY_FIELDS if k in row}
         try:
             csv_writer_summary.writerow(summary_row)
             csv_file_summary.flush()
         except: pass
-    
-    device_last_state[device_id] = {'temp': temp, 'sleep': sleep}
     
     # MQTT
     if mqtt_client:
@@ -356,7 +365,20 @@ def write_record(device_id, update_type, temp, hum, a1, vcap, co2, spectrum, gai
         if co2 >= 0:
             publish_mqtt(f"riotee/{dev}/co2_ppm", co2)
     
-    logging.info(f"{device_id}: T={temp:.1f}C H={hum:.1f}% CO2={co2 if co2>=0 else 'N/A'}ppm Sleep={sleep}s")
+    co2_value = f"{co2}ppm" if co2 >= 0 else "N/A"
+    last_co2_value = f"{current_co2}ppm" if current_co2 >= 0 else "N/A"
+    if co2_status:
+        logging.info(
+            f"{device_id}: T={temp:.1f}C H={hum:.1f}% CO2={co2_value} ({co2_status}, last_valid={last_co2_value}) Sleep={sleep}s"
+        )
+    else:
+        logging.info(f"{device_id}: T={temp:.1f}C H={hum:.1f}% CO2={co2_value} Sleep={sleep}s")
+
+    device_last_state[device_id] = {
+        'temp': temp,
+        'sleep': sleep,
+        'last_valid_co2': current_co2,
+    }
 
 def process_compact(device_id, raw):
     """Process compact binary packet (0xAA magic)"""
@@ -389,7 +411,8 @@ def process_compact(device_id, raw):
         try: co2 = struct.unpack('<h', raw[12:14].tobytes())[0]
         except: pass
     
-    write_record(device_id, "COMPACT", temp, hum, a1, vcap, co2, spectrum, gain, sleep)
+    co2_status = describe_co2_state(pkt_type, co2)
+    write_record(device_id, "COMPACT", temp, hum, a1, vcap, co2, spectrum, gain, sleep, co2_status=co2_status)
 
 def process_float(device_id, data):
     """Process float32 array packet (17 floats: 4 basic + 2 config + 10 spectrum + 1 co2)"""
