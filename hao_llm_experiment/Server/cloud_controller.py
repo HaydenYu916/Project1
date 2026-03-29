@@ -109,23 +109,49 @@ def on_message(client, userdata, msg):
             edge_is_offline = False
 
         state = json.loads(msg.payload.decode())
-        logger.info(f"📩 Received State: PPFD={state.get('PPFD_current', 0):.1f}, Pn={state.get('Pn_current', 0):.2f}")
-        
-        # Format for LLM Prompt
-        co2_air = FIXED_CO2_PPM if USE_FIXED_CO2 else state.get("Ci", FIXED_CO2_PPM)
+        logger.info(
+            "📩 Received core state: ppfd_now=%.1f pn_now=%.2f tleaf_now=%.2f target_ppfd=%.1f valid=%s",
+            state.get("ppfd_now", 0.0),
+            state.get("pn_now", 0.0),
+            state.get("tleaf_now", 0.0),
+            state.get("last_target_ppfd", 0.0),
+            int(bool(state.get("sensor_data_valid", False))),
+        )
+
+        if not state.get("sensor_data_valid", False):
+            logger.warning(
+                "Skipping LLM call because sensor_data_valid is false. missing_fields=%s",
+                state.get("missing_fields", []),
+            )
+            return
+
+        # Format core fields for the LLM prompt.
+        co2_air = FIXED_CO2_PPM if USE_FIXED_CO2 else state.get("co2_now", FIXED_CO2_PPM)
 
         obs = {
-            "temp_air": state.get("Tleaf", 25.0),
-            "co2_air": co2_air,
             "local_time": state.get("local_time", "12:00"),
-            "isDay": state.get("isDay", 1)
+            "is_day": state.get("is_day", 1),
+            "tleaf_now": state.get("tleaf_now", 25.0),
+            "co2_now": co2_air,
+            "ppfd_now": state.get("ppfd_now", 0.0),
+            "pn_now": state.get("pn_now", 0.0),
+            "power_now_w": state.get("power_now_w", 0.0),
         }
         physics_ctx = {
-            "Pn_current_rate": state.get("Pn_current", 0.0),
-            "current_ppfd": state.get("PPFD_current", 0.0),
-            "electricity_price_$per_kWh": 0.20
+            "tleaf_avg_3min": state.get("tleaf_avg_3min", state.get("tleaf_now", 25.0)),
+            "pn_avg_3min": state.get("pn_avg_3min", state.get("pn_now", 0.0)),
+            "tleaf_delta_15min": state.get("tleaf_delta_15min", 0.0),
+            "pn_delta_15min": state.get("pn_delta_15min", 0.0),
+            "last_target_ppfd": state.get("last_target_ppfd", 0.0),
+            "electricity_price_$per_kWh": 0.20,
         }
-        forecast = {"next_1h_temp": state.get("Tleaf", 25.0)}
+        forecast = {
+            "next_1h_temp_estimate": state.get("tleaf_avg_3min", state.get("tleaf_now", 25.0)),
+            "trend_hint": {
+                "tleaf_delta_15min": state.get("tleaf_delta_15min", 0.0),
+                "pn_delta_15min": state.get("pn_delta_15min", 0.0),
+            },
+        }
 
         # Run LLM
         logger.info("🧠 Consulting AI Agronomist...")

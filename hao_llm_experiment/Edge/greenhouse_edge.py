@@ -5,6 +5,7 @@ import logging
 import math
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 try:
@@ -52,6 +53,7 @@ DEFAULT_SENSOR_FIELD_MAP = {
     "humidity": "RH",
     "ppfd_pred": "PPFD_pred",
     "pn_pred": "Pn_pred",
+    "power": "Power_now_w",
 }
 
 
@@ -202,6 +204,10 @@ MAX_HEATER_PWM = EDGE_CONFIG["max_heater_pwm"]
 last_command_time = time.time()
 is_offline_mode = False
 mqtt_connected = False
+STATE_HISTORY_RETENTION_SECONDS = 15 * 60
+SHORT_WINDOW_SECONDS = 3 * 60
+LONG_WINDOW_SECONDS = 15 * 60
+state_history = deque()
 
 
 def format_field_list(fields):
@@ -218,6 +224,76 @@ def get_missing_fields(fields):
         if isinstance(value, (int, float)) and not math.isfinite(value):
             missing_fields.append(field)
     return missing_fields
+
+
+def record_state_snapshot():
+    snapshot = {
+        "timestamp": time.time(),
+        "Tleaf": env_state.get("Tleaf"),
+        "Ci": env_state.get("Ci"),
+        "PPFD_pred": env_state.get("PPFD_pred"),
+        "Pn_pred": env_state.get("Pn_pred"),
+        "Power_now_w": env_state.get("Power_now_w"),
+    }
+    state_history.append(snapshot)
+    cutoff = snapshot["timestamp"] - STATE_HISTORY_RETENTION_SECONDS
+    while state_history and state_history[0]["timestamp"] < cutoff:
+        state_history.popleft()
+
+
+def _window_snapshots(window_seconds):
+    if not state_history:
+        return []
+    cutoff = time.time() - window_seconds
+    return [snapshot for snapshot in state_history if snapshot["timestamp"] >= cutoff]
+
+
+def _average_from_window(field_name, window_seconds, fallback_value):
+    values = []
+    for snapshot in _window_snapshots(window_seconds):
+        value = snapshot.get(field_name)
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            values.append(float(value))
+    if values:
+        return sum(values) / len(values)
+    return fallback_value
+
+
+def _delta_from_window(field_name, window_seconds, fallback_value=0.0):
+    current_value = env_state.get(field_name)
+    if not isinstance(current_value, (int, float)) or not math.isfinite(current_value):
+        return fallback_value
+
+    earliest_value = None
+    for snapshot in _window_snapshots(window_seconds):
+        value = snapshot.get(field_name)
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            earliest_value = float(value)
+            break
+
+    if earliest_value is None:
+        return fallback_value
+    return float(current_value) - earliest_value
+
+
+def build_server_payload():
+    now = datetime.datetime.now(TIMEZONE)
+    return {
+        "local_time": now.strftime("%H:%M"),
+        "is_day": 1 if 6 <= now.hour < 18 else 0,
+        "tleaf_now": env_state["Tleaf"],
+        "co2_now": env_state["Ci"],
+        "ppfd_now": env_state["PPFD_pred"],
+        "pn_now": env_state["Pn_pred"],
+        "power_now_w": env_state["Power_now_w"],
+        "tleaf_avg_3min": _average_from_window("Tleaf", SHORT_WINDOW_SECONDS, env_state["Tleaf"]),
+        "pn_avg_3min": _average_from_window("Pn_pred", SHORT_WINDOW_SECONDS, env_state["Pn_pred"]),
+        "tleaf_delta_15min": _delta_from_window("Tleaf", LONG_WINDOW_SECONDS),
+        "pn_delta_15min": _delta_from_window("Pn_pred", LONG_WINDOW_SECONDS),
+        "last_target_ppfd": env_state["target_ppfd"],
+        "sensor_data_valid": current_data_valid(),
+        "missing_fields": get_missing_fields(STATE_REQUIRED_FIELDS),
+    }
 
 
 def current_data_valid():
@@ -304,6 +380,7 @@ except Exception:
 def calculate_and_publish_state(client):
     if USE_FIXED_CO2:
         env_state["Ci"] = FIXED_CO2_PPM
+        record_state_snapshot()
 
     missing_model_fields = get_missing_fields(STATE_REQUIRED_FIELDS)
     missing_sensor_fields = get_missing_fields(ALL_SENSOR_FIELDS)
@@ -316,15 +393,7 @@ def calculate_and_publish_state(client):
         log_data_to_csv("state_skipped_missing_data", False, missing_sensor_fields)
         return
 
-    now = datetime.datetime.now(TIMEZONE)
-    payload = {
-        "Tleaf": env_state["Tleaf"],
-        "Ci": env_state["Ci"],
-        "PPFD_current": env_state["PPFD_pred"],
-        "Pn_current": env_state["Pn_pred"],
-        "local_time": now.strftime("%H:%M"),
-        "isDay": 1 if 6 <= now.hour < 18 else 0,
-    }
+    payload = build_server_payload()
 
     event = "state_computed_not_published"
     if mqtt_connected:
@@ -495,6 +564,7 @@ def on_message(client, userdata, msg):
     if USE_FIXED_CO2 and topic == CO2_TOPIC:
         env_state["Ci"] = FIXED_CO2_PPM
         logger.debug("Ignoring MQTT CO2 payload because fixed CO2 mode is enabled.")
+        record_state_snapshot()
         return
 
     try:
@@ -508,6 +578,7 @@ def on_message(client, userdata, msg):
         return
 
     env_state[TOPIC_MAP[topic]] = value
+    record_state_snapshot()
 
 
 def on_connect(client, userdata, flags, reason_code, properties):
