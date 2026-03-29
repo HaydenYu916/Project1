@@ -16,7 +16,6 @@ except ModuleNotFoundError:
         from pip._vendor import tomli as tomllib
 
 import paho.mqtt.client as mqtt
-import pandas as pd
 import pytz
 
 
@@ -25,8 +24,6 @@ PROJECT_ROOT = BASE_DIR.parent.parent
 MODEL_BASE_DIR = PROJECT_ROOT / "Tool" / "Model"
 for module_dir in (
     BASE_DIR,
-    MODEL_BASE_DIR / "SPtoPPFD",
-    MODEL_BASE_DIR / "EnvtoPN",
     MODEL_BASE_DIR / "PWMtoPPFD",
 ):
     module_dir_str = str(module_dir)
@@ -34,9 +31,6 @@ for module_dir in (
         sys.path.insert(0, module_dir_str)
 
 
-# Import local ML modules after adjusting sys.path.
-import predict_sp_to_ppfd as sp_model
-import predict_env_to_pn as pn_model
 import predict_pwm_from_ppfd as pwm_model
 
 
@@ -56,14 +50,8 @@ DEFAULT_SENSOR_FIELD_MAP = {
     "temperature": "Tleaf",
     "co2_ppm": "Ci",
     "humidity": "RH",
-    "sp_415": "sp_415_mean",
-    "sp_445": "sp_445_mean",
-    "sp_480": "sp_480_mean",
-    "sp_515": "sp_515_mean",
-    "sp_555": "sp_555_mean",
-    "sp_590": "sp_590_mean",
-    "sp_630": "sp_630_mean",
-    "sp_680": "sp_680_mean",
+    "ppfd_pred": "PPFD_pred",
+    "pn_pred": "Pn_pred",
 }
 
 
@@ -187,17 +175,9 @@ TOPIC_CMD = EDGE_CONFIG["topic_cmd"]
 TOPIC_STATE = EDGE_CONFIG["topic_state"]
 TOPIC_MAP = EDGE_CONFIG["topic_map"]
 
-SPECTRAL_FIELDS = [
-    "sp_415_mean",
-    "sp_445_mean",
-    "sp_480_mean",
-    "sp_515_mean",
-    "sp_555_mean",
-    "sp_590_mean",
-    "sp_630_mean",
-    "sp_680_mean",
-]
-MODEL_REQUIRED_FIELDS = ["Tleaf", "Ci", *SPECTRAL_FIELDS]
+STATE_REQUIRED_FIELDS = ["Tleaf", "PPFD_pred", "Pn_pred"]
+if not USE_FIXED_CO2:
+    STATE_REQUIRED_FIELDS.append("Ci")
 ALL_SENSOR_FIELDS = list(TOPIC_MAP.values())
 CO2_TOPIC = EDGE_CONFIG["co2_topic"]
 
@@ -241,7 +221,7 @@ def get_missing_fields(fields):
 
 
 def current_data_valid():
-    return not get_missing_fields(MODEL_REQUIRED_FIELDS)
+    return not get_missing_fields(STATE_REQUIRED_FIELDS)
 
 
 def safe_csv_value(value):
@@ -309,25 +289,14 @@ def parse_nonnegative_number(raw_value, field_name, upper_bound=None):
     return value
 
 
-def compute_env_to_pn_rb_feature(red_pwm, blue_pwm):
-    total_pwm = red_pwm + blue_pwm
-    if total_pwm > 0:
-        return red_pwm / total_pwm
-
-    recommended_ratio = pwm_pkg["recommended_rb_ratio"]
-    return recommended_ratio / (recommended_ratio + 1.0)
-
-
 ensure_csv_file()
 
-# Load ML Models
-logger.info("Loading ML models...")
+# Load PWM model
+logger.info("Loading PWM control model...")
 try:
-    sp_pkg = sp_model.load_package(sp_model.DEFAULT_MODEL_PACKAGE)
-    pn_pkg = pn_model.load_package(pn_model.DEFAULT_MODEL_PACKAGE)
     pwm_pkg = pwm_model.load_model(None)
 except Exception:
-    logger.exception("Failed to load one or more ML model packages.")
+    logger.exception("Failed to load PWM model package.")
     raise
 
 
@@ -336,38 +305,15 @@ def calculate_and_publish_state(client):
     if USE_FIXED_CO2:
         env_state["Ci"] = FIXED_CO2_PPM
 
-    missing_model_fields = get_missing_fields(MODEL_REQUIRED_FIELDS)
+    missing_model_fields = get_missing_fields(STATE_REQUIRED_FIELDS)
     missing_sensor_fields = get_missing_fields(ALL_SENSOR_FIELDS)
 
     if missing_model_fields:
         logger.warning(
-            "Skipping state evaluation because required sensor data is missing: %s",
+            "Skipping state publish because required sensor data is missing: %s",
             format_field_list(missing_model_fields),
         )
         log_data_to_csv("state_skipped_missing_data", False, missing_sensor_fields)
-        return
-
-    try:
-        sp_df = pd.DataFrame([env_state])
-        X_sp = sp_model.prepare_features(sp_df, sp_pkg["feature_columns"])
-        env_state["PPFD_pred"] = float(sp_pkg["pipeline"].predict(X_sp)[0])
-
-        red_pwm = env_state["current_red_pwm"]
-        blue_pwm = env_state["current_blue_pwm"]
-        rb_ratio = compute_env_to_pn_rb_feature(red_pwm, blue_pwm)
-
-        pn_input = {
-            "T": env_state["Tleaf"],
-            "CO2": env_state["Ci"],
-            "R:B": rb_ratio,
-            "PPFD": env_state["PPFD_pred"],
-        }
-        pn_df = pd.DataFrame([pn_input])
-        X_pn = pn_model.prepare_features(pn_df, pn_pkg["feature_columns"])
-        env_state["Pn_pred"] = float(pn_pkg["pipeline"].predict(X_pn)[0])
-    except Exception:
-        logger.exception("State evaluation failed during local model inference.")
-        log_data_to_csv("state_error", False, get_missing_fields(ALL_SENSOR_FIELDS))
         return
 
     now = datetime.datetime.now(TIMEZONE)
@@ -387,10 +333,10 @@ def calculate_and_publish_state(client):
             if publish_info.rc == mqtt.MQTT_ERR_SUCCESS:
                 event = "state_published"
                 logger.info(
-                    "Published greenhouse state: ppfd=%.2f pn=%.2f target_ppfd=%.2f offline=%s missing=%s",
-                    env_state["PPFD_pred"],
-                    env_state["Pn_pred"],
-                    env_state["target_ppfd"],
+                    "Published greenhouse state from MQTT-derived metrics: ppfd=%.2f pn=%.2f target_ppfd=%.2f offline=%s missing=%s",
+                        env_state["PPFD_pred"],
+                        env_state["Pn_pred"],
+                        env_state["target_ppfd"],
                     int(is_offline_mode),
                     format_field_list(missing_sensor_fields),
                 )
@@ -402,7 +348,7 @@ def calculate_and_publish_state(client):
         except Exception:
             logger.exception("Computed greenhouse state but MQTT publish failed.")
     else:
-        logger.warning("MQTT disconnected; computed greenhouse state locally without publishing.")
+        logger.warning("MQTT disconnected; state snapshot prepared locally without publishing.")
 
     log_data_to_csv(event, True, missing_sensor_fields)
 
