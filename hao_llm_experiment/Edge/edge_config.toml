@@ -1,0 +1,34 @@
+[timezone]
+name = "Australia/Sydney"
+
+[mqtt]
+broker = "azure.nocolor.cc"
+port = 1883
+username = "feiyue"
+password = "123456789"
+
+[topics]
+command = "growbox/commands/setpoints"
+state = "growbox/state/aggregated"
+
+[co2]
+use_fixed = true
+fixed_ppm = 400.0
+
+[runtime]
+offline_timeout_seconds = 1800
+publish_interval_seconds = 900
+max_heater_pwm = 100
+
+[sensor_topics]
+temperature = "riotee/fnYQCQ/temperature"
+co2_ppm = "riotee/fnYQCQ/co2_ppm"
+humidity = "riotee/fnYQCQ/humidity"
+sp_415 = "riotee/fnYQCQ/sp_415"
+sp_445 = "riotee/fnYQCQ/sp_445"
+sp_480 = "riotee/fnYQCQ/sp_480"
+sp_515 = "riotee/fnYQCQ/sp_515"
+sp_555 = "riotee/fnYQCQ/sp_555"
+sp_590 = "riotee/fnYQCQ/sp_590"
+sp_630 = "riotee/fnYQCQ/sp_630"
+sp_680 = "riotee/fnYQCQ/sp_680"

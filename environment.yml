@@ -2,14 +2,14 @@ name: project1
 channels:
   - conda-forge
 dependencies:
-  - python=3.13
+  - python=3.10
   - pip
   - numpy
   - pandas
   - matplotlib
   - scipy
-  - scikit-learn
-  - joblib
+  - scikit-learn=1.3.0
+  - joblib=1.3.*
   - requests
   - aiohttp
   - paho-mqtt

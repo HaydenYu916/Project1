@@ -1,0 +1,22 @@
+[paths]
+log_dir = "logs/cloud"
+
+[mqtt]
+broker = "azure.nocolor.cc"
+port = 1883
+username = "feiyue"
+password = "123456789"
+
+[topics]
+state = "growbox/state/aggregated"
+command = "growbox/commands/setpoints"
+
+[co2]
+use_fixed = true
+fixed_ppm = 400.0
+
+[watchdog]
+edge_timeout_seconds = 2000
+
+[llm]
+model_name = "gpt-oss:120b"

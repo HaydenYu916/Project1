@@ -113,9 +113,12 @@ class RioteeSystem:
         logging.info(f"开始启动Riotee数据采集器，实验名称: {experiment_name}")
         
         try:
-            # 构建启动命令 - 优先使用 riotee 虚拟环境，否则用当前 Python
+            # 构建启动命令 - 优先使用本机 project1 环境，其次兼容树莓派路径，最后退回当前 Python
+            project1_python = "/home/hao/miniforge3/envs/project1/bin/python3"
             riotee_python = "/home/pi/Desktop/riotee-env/bin/python3"
-            if not os.path.exists(riotee_python):
+            if os.path.exists(project1_python):
+                riotee_python = project1_python
+            elif not os.path.exists(riotee_python):
                 riotee_python = sys.executable
             cmd = [riotee_python, str(self.collector_script)]
             if experiment_name:
