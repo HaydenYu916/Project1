@@ -5,7 +5,15 @@ import datetime
 import logging
 import threading
 from pathlib import Path
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:
+        from pip._vendor import tomli as tomllib
+
 import paho.mqtt.client as mqtt
 
 # Import your LLM controller modules
