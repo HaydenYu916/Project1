@@ -1,0 +1,2 @@
+[2026-03-19T12:20:59.281] run_dir=/home/hao/Desktop/Project1/Collect_Sp_PPFD_LED/outputs/20260319_122059_h3_pC-0319
+[2026-03-19T12:20:59.281] segment_count=30

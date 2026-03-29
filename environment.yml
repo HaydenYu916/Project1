@@ -1,0 +1,22 @@
+name: project1
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pip
+  - numpy
+  - pandas
+  - matplotlib
+  - scipy
+  - scikit-learn
+  - joblib
+  - requests
+  - aiohttp
+  - paho-mqtt
+  - pyserial
+  - fastapi
+  - uvicorn
+  - pip:
+      - scikit-optimize
+      - aioshelly
+      - riotee-gateway

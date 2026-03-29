@@ -1,0 +1,43 @@
+{
+  "model_name": "HistGBR",
+  "model_version": "tuned",
+  "feature_columns": [
+    "T",
+    "CO2",
+    "R:B",
+    "PPFD"
+  ],
+  "target_col": "Pn_avg",
+  "input_csv": "/Users/z5540822/Downloads/PWM-ppfd/Hao_PN_training/Data/PPFD_clean.csv",
+  "n_rows": 600,
+  "normalization": "StandardScaler in pipeline before model",
+  "test_metrics": {
+    "RMSE": 0.5453618277560996,
+    "MAE": 0.36141772904870517,
+    "R2": 0.9933730993188432,
+    "Bias": -0.09004706239893316,
+    "NRMSE_mean": 0.04871042482463306,
+    "NRMSE_range": 0.021599332471090936
+  },
+  "used_tuning": true,
+  "available_models": [
+    "DummyMean",
+    "LinearRegression",
+    "Ridge",
+    "Lasso",
+    "ElasticNet",
+    "Huber",
+    "PLSR",
+    "PCR_Ridge",
+    "KNN",
+    "SVR_RBF",
+    "KernelRidge_RBF",
+    "DecisionTree",
+    "RandomForest",
+    "ExtraTrees",
+    "GradientBoosting",
+    "HistGBR",
+    "GPR",
+    "MLP"
+  ]
+}

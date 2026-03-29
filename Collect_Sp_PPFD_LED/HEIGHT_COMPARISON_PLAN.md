@@ -158,7 +158,7 @@ cd /home/hao/Desktop/Growpro/Collect_Sp_PPFD_LED && python3 run_led_calibration.
   --totals "10,30,45,60,80,100" \
   --n-spec 3 \
   --prewarm-min 0 \
-  --run-name h1_pL+y-0311
+  --run-name h3_pC-0319
 ```
 
 例如：
