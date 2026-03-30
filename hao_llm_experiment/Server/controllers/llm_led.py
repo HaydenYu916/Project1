@@ -8,7 +8,8 @@ import numpy as np
 
 DEFAULT_MODEL = os.getenv('LLM_MODEL', 'gpt-oss:120b')
 OLLAMA_BASE = os.getenv('OLLAMA_BASE_URL', 'http://127.0.0.1:11434')
-LLM_TIMEOUT_SECONDS = int(os.getenv('LLM_TIMEOUT_SECONDS', '45'))
+LLM_TIMEOUT_SECONDS = int(os.getenv('LLM_TIMEOUT_SECONDS', '180'))
+OLLAMA_KEEP_ALIVE = os.getenv('OLLAMA_KEEP_ALIVE', '30m')
 
 @dataclass
 class LLMLEDPolicy:
@@ -40,7 +41,7 @@ def _build_prompt(observations: Dict[str, Any], context: Dict[str, Any], forecas
         '\n[Objectives_And_Penalties]\n' + json.dumps(policy),
         "\n[Reasoning_Instructions]\n"
         "- Respect actuator limits.\n"
-        "- Check 'local_time' and 'isDay'. If night, set target_ppfd to 0.0 for dark respiration.\n"
+        "- Check 'local_time' and 'is_day'. If night, set target_ppfd to 0.0 for dark respiration.\n"
         "- Keep indoor temperature within [temp_min, temp_max].\n"
         "- Consider electricity_price_$per_kWh to weigh energy cost.\n"
         "- OUTPUT STRICT JSON ONLY with fields: target_ppfd, uHeat_frac, rationale, explanation.\n"
@@ -50,7 +51,12 @@ def _build_prompt(observations: Dict[str, Any], context: Dict[str, Any], forecas
 
 def call_llm(prompt: str) -> str:
     url = f"{OLLAMA_BASE}/api/generate"
-    data = {"model": DEFAULT_MODEL, "prompt": prompt, "options": {"temperature": 0.2}}
+    data = {
+        "model": DEFAULT_MODEL,
+        "prompt": prompt,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "options": {"temperature": 0.2},
+    }
     try:
         r = requests.post(url, json=data, timeout=LLM_TIMEOUT_SECONDS, stream=True)
         r.raise_for_status()
@@ -106,6 +112,7 @@ class LLMLEDController:
 
     def decide(self, obs: Dict, physics_ctx: Dict, forecast: Dict) -> Dict[str, Any]:
         prompt = _build_prompt(obs, physics_ctx, forecast, self.policy.__dict__)
+        raw = ""
         try:
             raw = call_llm(prompt)
             decision = _validate_and_parse(raw, self.limits)
@@ -122,7 +129,12 @@ class LLMLEDController:
         except Exception as e:
             print(f"LLM Error: {e}")
             # Safe Fallback
-            fallback = {"target_ppfd": 0.0, "uHeat_frac": 0.0, "rationale": "fallback", "explanation": ["Error"]}
+            fallback = {
+                "target_ppfd": 0.0,
+                "uHeat_frac": 0.0,
+                "rationale": "fallback",
+                "explanation": [f"{type(e).__name__}: {e}"],
+            }
             self._write_log({
                 "model": DEFAULT_MODEL,
                 "observations": obs if self.logger.log_full_context else None,

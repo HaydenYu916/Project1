@@ -129,7 +129,7 @@ def on_message(client, userdata, msg):
 
         state = json.loads(msg.payload.decode())
         logger.info(
-            "📩 Received core state: local_time=%s tz=%s ppfd_now=%.1f pn_now=%.2f tleaf_now=%.2f target_ppfd=%.1f valid=%s",
+            "📩 Received core state: local_time=%s tz=%s ppfd_now=%.1f pn_now=%.2f tleaf_now=%.2f last_target_ppfd=%.1f valid=%s",
             state.get("local_time", "--:--"),
             state.get("timezone", "unknown"),
             state.get("ppfd_now", 0.0),
