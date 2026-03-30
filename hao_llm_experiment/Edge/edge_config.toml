@@ -21,9 +21,9 @@ publish_interval_seconds = 900
 max_heater_pwm = 100
 
 [sensor_topics]
-temperature = "riotee/fnYQCQ/temperature"
-co2_ppm = "riotee/fnYQCQ/co2_ppm"
-humidity = "riotee/fnYQCQ/humidity"
-ppfd_pred = "riotee/fnYQCQ/ppfd_pred"
-pn_pred = "riotee/fnYQCQ/pn_pred"
+temperature = "riotee/L_6vSQ/temperature"
+co2_ppm = "riotee/L_6vSQ/co2_ppm"
+humidity = "riotee/L_6vSQ/humidity"
+ppfd_pred = "riotee/L_6vSQ/ppfd_pred"
+pn_pred = "riotee/L_6vSQ/pn_pred"
 power = "homeassistant/sensor/c1_redblue_power/state"
