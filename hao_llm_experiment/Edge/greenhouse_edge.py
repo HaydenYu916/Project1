@@ -23,9 +23,12 @@ import paho.mqtt.client as mqtt
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent.parent
 MODEL_BASE_DIR = PROJECT_ROOT / "Tool" / "Model"
+SHELLY_BASE_DIR = PROJECT_ROOT / "Tool" / "LED_Shelly"
 for module_dir in (
     BASE_DIR,
     MODEL_BASE_DIR / "PWMtoPPFD",
+    SHELLY_BASE_DIR / "src",
+    SHELLY_BASE_DIR / "config",
 ):
     module_dir_str = str(module_dir)
     if module_dir_str not in sys.path:
@@ -36,9 +39,9 @@ import predict_pwm_from_ppfd as pwm_model
 
 
 try:
-    from src.shelly_controller import DEVICES, rpc
+    from shelly_controller import DEVICES, rpc
 except ImportError:
-    DEVICES = {"Red": "dev_red", "Blue": "dev_blue", "Heater": "dev_heat"}
+    DEVICES = {"Red": "dev_red", "Blue": "dev_blue"}
 
     def rpc(dev, cmd, params):
         logger.debug("[MOCK] dev=%s cmd=%s params=%s", dev, cmd, params)
@@ -92,7 +95,6 @@ def load_edge_config():
         "fixed_co2_ppm": float(co2_cfg.get("fixed_ppm", 400.0)),
         "offline_timeout_seconds": int(runtime_cfg.get("offline_timeout_seconds", 1800)),
         "publish_interval_seconds": int(runtime_cfg.get("publish_interval_seconds", 900)),
-        "max_heater_pwm": int(runtime_cfg.get("max_heater_pwm", 100)),
         "topic_map": topic_map,
         "co2_topic": sensor_topics["co2_ppm"],
         "sensor_topics": sensor_topics,
@@ -131,7 +133,6 @@ CSV_HEADERS = [
     "Target_PPFD",
     "Red_PWM",
     "Blue_PWM",
-    "Heater_PWM",
     "Is_Offline",
     "Data_Valid",
     "Missing_Fields",
@@ -190,7 +191,6 @@ env_state.update(
         "Ci": FIXED_CO2_PPM if USE_FIXED_CO2 else None,
         "current_red_pwm": 0,
         "current_blue_pwm": 0,
-        "current_heater_pwm": 0,
         "target_ppfd": 0.0,
         "PPFD_pred": 0.0,
         "Pn_pred": 0.0,
@@ -200,7 +200,6 @@ env_state.update(
 # Runtime status
 OFFLINE_TIMEOUT_SECONDS = EDGE_CONFIG["offline_timeout_seconds"]
 PUBLISH_INTERVAL = EDGE_CONFIG["publish_interval_seconds"]
-MAX_HEATER_PWM = EDGE_CONFIG["max_heater_pwm"]
 last_command_time = time.time()
 is_offline_mode = False
 mqtt_connected = False
@@ -322,7 +321,6 @@ def log_data_to_csv(event, data_valid, missing_fields=None):
                     env_state["target_ppfd"],
                     env_state["current_red_pwm"],
                     env_state["current_blue_pwm"],
-                    env_state["current_heater_pwm"],
                     int(is_offline_mode),
                     int(data_valid),
                     format_field_list(missing_fields),
@@ -430,15 +428,11 @@ def run_fallback_control():
     is_day = 6 <= now.hour < 18
 
     safe_ppfd = 250.0 if is_day else 0.0
-    tleaf = env_state["Tleaf"]
-    safe_heater_pwm = 60 if (tleaf is not None and tleaf < 18.0) else 0
 
     logger.warning(
-        "Applying fallback control: is_day=%s safe_ppfd=%.1f safe_heater_pwm=%d tleaf=%s",
+        "Applying fallback control: is_day=%s safe_ppfd=%.1f",
         int(is_day),
         safe_ppfd,
-        safe_heater_pwm,
-        "missing" if tleaf is None else f"{tleaf:.2f}",
     )
 
     if safe_ppfd > 0:
@@ -455,7 +449,6 @@ def run_fallback_control():
     env_state["target_ppfd"] = safe_ppfd
     env_state["current_red_pwm"] = red_pwm
     env_state["current_blue_pwm"] = blue_pwm
-    env_state["current_heater_pwm"] = safe_heater_pwm
 
     apply_device_command(
         "Red",
@@ -466,11 +459,6 @@ def run_fallback_control():
         "Blue",
         "Light.Set",
         {"id": 0, "on": blue_pwm > 0, "brightness": blue_pwm},
-    )
-    apply_device_command(
-        "Heater",
-        "Switch.Set",
-        {"id": 0, "on": safe_heater_pwm > 0},
     )
 
     log_data_to_csv("fallback_applied", current_data_valid(), get_missing_fields(ALL_SENSOR_FIELDS))
@@ -496,15 +484,6 @@ def on_message(client, userdata, msg):
 
         try:
             target_ppfd = parse_nonnegative_number(data.get("target_ppfd", 0), "target_ppfd")
-            heater_pwm = int(
-                round(
-                    parse_nonnegative_number(
-                        data.get("heater_pwm", 0),
-                        "heater_pwm",
-                        upper_bound=MAX_HEATER_PWM,
-                    )
-                )
-            )
         except ValueError as exc:
             logger.warning("Ignoring command with invalid values: %s payload=%s", exc, payload)
             return
@@ -526,14 +505,12 @@ def on_message(client, userdata, msg):
         env_state["target_ppfd"] = target_ppfd
         env_state["current_red_pwm"] = red_pwm
         env_state["current_blue_pwm"] = blue_pwm
-        env_state["current_heater_pwm"] = heater_pwm
 
         logger.info(
-            "Applying cloud command: target_ppfd=%.2f red_pwm=%d blue_pwm=%d heater_pwm=%d",
+            "Applying cloud command: target_ppfd=%.2f red_pwm=%d blue_pwm=%d",
             target_ppfd,
             red_pwm,
             blue_pwm,
-            heater_pwm,
         )
 
         apply_device_command(
@@ -545,11 +522,6 @@ def on_message(client, userdata, msg):
             "Blue",
             "Light.Set",
             {"id": 0, "on": blue_pwm > 0, "brightness": blue_pwm},
-        )
-        apply_device_command(
-            "Heater",
-            "Switch.Set",
-            {"id": 0, "on": heater_pwm > 0},
         )
         log_data_to_csv(
             "cloud_command_applied",
@@ -610,6 +582,15 @@ def on_disconnect(client, userdata, flags, reason_code, properties):
         )
 
 
+def next_publish_epoch(after_epoch=None):
+    base_epoch = time.time() if after_epoch is None else float(after_epoch)
+    return math.floor(base_epoch / PUBLISH_INTERVAL) * PUBLISH_INTERVAL + PUBLISH_INTERVAL
+
+
+def format_local_timestamp(epoch_seconds):
+    return datetime.datetime.fromtimestamp(epoch_seconds, TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+
+
 if __name__ == "__main__":
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.username_pw_set(MQTT_USER, MQTT_PASS)
@@ -622,7 +603,12 @@ if __name__ == "__main__":
     client.connect_async(MQTT_BROKER_IP, MQTT_PORT, 60)
     client.loop_start()
 
-    last_publish_time = 0
+    next_publish_time = next_publish_epoch()
+    logger.info(
+        "State uploads are aligned to %d-second wall-clock boundaries; next publish at %s",
+        PUBLISH_INTERVAL,
+        format_local_timestamp(next_publish_time),
+    )
 
     try:
         while True:
@@ -632,9 +618,13 @@ if __name__ == "__main__":
                 is_offline_mode = True
                 run_fallback_control()
 
-            if current_time - last_publish_time > PUBLISH_INTERVAL:
+            if current_time >= next_publish_time:
                 calculate_and_publish_state(client)
-                last_publish_time = current_time
+                next_publish_time = next_publish_epoch(next_publish_time)
+                logger.info(
+                    "Next scheduled state publish at %s",
+                    format_local_timestamp(next_publish_time),
+                )
 
             time.sleep(10)
     except KeyboardInterrupt:
