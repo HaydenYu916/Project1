@@ -130,7 +130,7 @@ CSV_HEADERS = [
     "RH",
     "PPFD_Predicted",
     "Pn_Predicted",
-    "Target_PPFD",
+    "Last_Target_PPFD",
     "Red_PWM",
     "Blue_PWM",
     "Is_Offline",
@@ -203,6 +203,7 @@ PUBLISH_INTERVAL = EDGE_CONFIG["publish_interval_seconds"]
 last_command_time = time.time()
 is_offline_mode = False
 mqtt_connected = False
+startup_time = time.time()
 STATE_HISTORY_RETENTION_SECONDS = 15 * 60
 SHORT_WINDOW_SECONDS = 3 * 60
 LONG_WINDOW_SECONDS = 15 * 60
@@ -471,6 +472,10 @@ def on_message(client, userdata, msg):
     payload = msg.payload.decode(errors="replace")
 
     if topic == TOPIC_CMD:
+        if getattr(msg, "retain", False):
+            logger.info("Ignoring retained cloud command on startup: payload=%s", payload)
+            return
+
         last_command_time = time.time()
         if is_offline_mode:
             logger.info("Cloud command stream resumed; leaving fallback control mode.")
@@ -486,6 +491,13 @@ def on_message(client, userdata, msg):
             target_ppfd = parse_nonnegative_number(data.get("target_ppfd", 0), "target_ppfd")
         except ValueError as exc:
             logger.warning("Ignoring command with invalid values: %s payload=%s", exc, payload)
+            return
+
+        # Protect the lights during restarts: ignore an immediate zero setpoint
+        # that arrives right after connect, even if the broker/client did not
+        # surface the message as retained to this process.
+        if time.time() - startup_time < 15 and target_ppfd == 0:
+            logger.info("Ignoring startup zero cloud command: payload=%s", payload)
             return
 
         if target_ppfd > 0:
