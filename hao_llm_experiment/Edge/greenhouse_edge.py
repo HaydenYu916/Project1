@@ -7,6 +7,7 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 try:
     import tomllib
@@ -17,7 +18,6 @@ except ModuleNotFoundError:
         from pip._vendor import tomli as tomllib
 
 import paho.mqtt.client as mqtt
-import pytz
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -44,7 +44,7 @@ except ImportError:
         logger.debug("[MOCK] dev=%s cmd=%s params=%s", dev, cmd, params)
 
 
-TIMEZONE = pytz.timezone("Australia/Sydney")
+TIMEZONE = ZoneInfo("Australia/Sydney")
 
 CONFIG_PATH = BASE_DIR / "edge_config.toml"
 DEFAULT_SENSOR_FIELD_MAP = {
@@ -100,7 +100,7 @@ def load_edge_config():
 
 
 EDGE_CONFIG = load_edge_config()
-TIMEZONE = pytz.timezone(EDGE_CONFIG["timezone"])
+TIMEZONE = ZoneInfo(EDGE_CONFIG["timezone"])
 
 # --- 1. DIRECTORY & LOGGING SETUP ---
 LOG_DIR = BASE_DIR / "logs"
@@ -280,6 +280,7 @@ def build_server_payload():
     now = datetime.datetime.now(TIMEZONE)
     return {
         "local_time": now.strftime("%H:%M"),
+        "timezone": EDGE_CONFIG["timezone"],
         "is_day": 1 if 6 <= now.hour < 18 else 0,
         "tleaf_now": env_state["Tleaf"],
         "co2_now": env_state["Ci"],

@@ -5,6 +5,7 @@ import datetime
 import logging
 import threading
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 try:
     import tomllib
@@ -28,6 +29,7 @@ def load_cloud_config():
     with CONFIG_PATH.open("rb") as f:
         raw_config = tomllib.load(f)
 
+    timezone_cfg = raw_config.get("timezone", {})
     mqtt_cfg = raw_config.get("mqtt", {})
     topic_cfg = raw_config.get("topics", {})
     watchdog_cfg = raw_config.get("watchdog", {})
@@ -36,6 +38,7 @@ def load_cloud_config():
 
     return {
         "log_dir": raw_config.get("paths", {}).get("log_dir", "logs/cloud"),
+        "timezone": timezone_cfg.get("name", "Australia/Sydney"),
         "mqtt_broker_ip": mqtt_cfg.get("broker", "azure.nocolor.cc"),
         "mqtt_port": int(mqtt_cfg.get("port", 1883)),
         "mqtt_user": mqtt_cfg.get("username", ""),
@@ -51,19 +54,34 @@ def load_cloud_config():
 
 CLOUD_CONFIG = load_cloud_config()
 LOG_DIR = CLOUD_CONFIG["log_dir"]
+TIMEZONE = ZoneInfo(CLOUD_CONFIG["timezone"])
 os.makedirs(LOG_DIR, exist_ok=True)
 
-timestamp_str = datetime.datetime.now().strftime("%Y%m%d")
+timestamp_str = datetime.datetime.now(TIMEZONE).strftime("%Y%m%d")
 log_filename = os.path.join(LOG_DIR, f'cloud_agronomist_{timestamp_str}.log')
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_filename),
-        logging.StreamHandler()
-    ]
+class TimezoneFormatter(logging.Formatter):
+    def __init__(self, fmt=None, datefmt=None, tz=None):
+        super().__init__(fmt=fmt, datefmt=datefmt)
+        self.tz = tz
+
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.datetime.fromtimestamp(record.created, tz=self.tz)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
+
+
+formatter = TimezoneFormatter(
+    fmt='%(asctime)s - %(levelname)s - %(message)s',
+    tz=TIMEZONE,
 )
+file_handler = logging.FileHandler(log_filename)
+file_handler.setFormatter(formatter)
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
 logger = logging.getLogger("CloudController")
 
 # --- 2. CONFIGURATION ---
@@ -88,7 +106,8 @@ policy = LLMLEDPolicy(temp_min=20.0, temp_max=30.0)
 llm_logger = LLMLoggerConfig(
     enabled=True, 
     log_dir=os.path.join(LOG_DIR, "llm_decisions"), 
-    log_full_context=True
+    log_full_context=True,
+    timezone_name=CLOUD_CONFIG["timezone"],
 )
 controller = LLMLEDController(policy=policy, model_name=MODEL_NAME, logger=llm_logger)
 
@@ -110,7 +129,9 @@ def on_message(client, userdata, msg):
 
         state = json.loads(msg.payload.decode())
         logger.info(
-            "📩 Received core state: ppfd_now=%.1f pn_now=%.2f tleaf_now=%.2f target_ppfd=%.1f valid=%s",
+            "📩 Received core state: local_time=%s tz=%s ppfd_now=%.1f pn_now=%.2f tleaf_now=%.2f target_ppfd=%.1f valid=%s",
+            state.get("local_time", "--:--"),
+            state.get("timezone", "unknown"),
             state.get("ppfd_now", 0.0),
             state.get("pn_now", 0.0),
             state.get("tleaf_now", 0.0),

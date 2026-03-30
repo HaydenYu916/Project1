@@ -1,6 +1,9 @@
 [paths]
 log_dir = "logs/cloud"
 
+[timezone]
+name = "Australia/Sydney"
+
 [mqtt]
 broker = "azure.nocolor.cc"
 port = 1883

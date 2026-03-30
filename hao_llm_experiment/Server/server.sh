@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PID_FILE="$ROOT_DIR/server.pid"
 LOG_FILE="$ROOT_DIR/nohup_server.log"
-PYTHON_BIN="/home/hao/miniforge3/envs/project1/bin/python"
+DEFAULT_PYTHON_BIN="/mnt/conda/envs/project1/bin/python"
+PYTHON_BIN="${PYTHON_BIN:-$DEFAULT_PYTHON_BIN}"
 SCRIPT_PATH="$ROOT_DIR/cloud_controller.py"
 
 is_running() {
@@ -39,6 +40,11 @@ show_status() {
 }
 
 start_server() {
+  if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "Python not found or not executable: $PYTHON_BIN"
+    return 1
+  fi
+
   if is_running; then
     echo "Server is already running:"
     show_process

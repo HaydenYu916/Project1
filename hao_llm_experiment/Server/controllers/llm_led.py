@@ -3,10 +3,12 @@ from __future__ import annotations
 import os, json, subprocess, requests, datetime
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Tuple
+from zoneinfo import ZoneInfo
 import numpy as np
 
 DEFAULT_MODEL = os.getenv('LLM_MODEL', 'gpt-oss:120b')
 OLLAMA_BASE = os.getenv('OLLAMA_BASE_URL', 'http://127.0.0.1:11434')
+LLM_TIMEOUT_SECONDS = int(os.getenv('LLM_TIMEOUT_SECONDS', '45'))
 
 @dataclass
 class LLMLEDPolicy:
@@ -26,6 +28,7 @@ class LLMLoggerConfig:
     log_dir: str = "logs/llm_led"
     session_name: Optional[str] = None
     log_full_context: bool = True
+    timezone_name: Optional[str] = None
 
 def _build_prompt(observations: Dict[str, Any], context: Dict[str, Any], forecast: Dict[str, Any], policy: Dict[str, Any]) -> str:
     blocks = [
@@ -49,14 +52,17 @@ def call_llm(prompt: str) -> str:
     url = f"{OLLAMA_BASE}/api/generate"
     data = {"model": DEFAULT_MODEL, "prompt": prompt, "options": {"temperature": 0.2}}
     try:
-        r = requests.post(url, json=data, timeout=30, stream=True)
+        r = requests.post(url, json=data, timeout=LLM_TIMEOUT_SECONDS, stream=True)
         r.raise_for_status()
         return ''.join(json.loads(line)['response'] for line in r.iter_lines() if line and 'response' in json.loads(line))
     except Exception as e:
         print(f"HTTP call failed, trying CLI. Error: {e}")
         cmd = ["ollama", "run", DEFAULT_MODEL]
-        proc = subprocess.run(cmd, input=prompt.encode('utf-8'), capture_output=True, timeout=30)
-        return proc.stdout.decode('utf-8', errors='ignore')
+        try:
+            proc = subprocess.run(cmd, input=prompt.encode('utf-8'), capture_output=True, timeout=LLM_TIMEOUT_SECONDS)
+            return proc.stdout.decode('utf-8', errors='ignore')
+        except Exception as cli_error:
+            raise RuntimeError(f"LLM call failed via HTTP and CLI: {cli_error}") from cli_error
 
 def _validate_and_parse(raw: str, limits: LLMControlLimits) -> Dict[str, Any]:
     start, end = raw.find('{'), raw.rfind('}')
@@ -81,21 +87,27 @@ class LLMLEDController:
             global DEFAULT_MODEL
             DEFAULT_MODEL = model_name
 
+    def _now(self) -> datetime.datetime:
+        if self.logger.timezone_name:
+            return datetime.datetime.now(ZoneInfo(self.logger.timezone_name))
+        return datetime.datetime.now()
+
     def _write_log(self, payload: Dict[str, Any]) -> None:
         if not self.logger.enabled:
             return
 
         os.makedirs(self.logger.log_dir, exist_ok=True)
-        session = self.logger.session_name or datetime.datetime.now().strftime("%Y%m%d")
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        now = self._now()
+        session = self.logger.session_name or now.strftime("%Y%m%d")
+        timestamp = now.strftime("%Y%m%d_%H%M%S_%f")
         path = os.path.join(self.logger.log_dir, f"{session}_{timestamp}.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
     def decide(self, obs: Dict, physics_ctx: Dict, forecast: Dict) -> Dict[str, Any]:
         prompt = _build_prompt(obs, physics_ctx, forecast, self.policy.__dict__)
-        raw = call_llm(prompt)
         try:
+            raw = call_llm(prompt)
             decision = _validate_and_parse(raw, self.limits)
             self._write_log({
                 "model": DEFAULT_MODEL,
@@ -108,7 +120,7 @@ class LLMLEDController:
             })
             return decision
         except Exception as e:
-            print(f"LLM Parse Error: {e}")
+            print(f"LLM Error: {e}")
             # Safe Fallback
             fallback = {"target_ppfd": 0.0, "uHeat_frac": 0.0, "rationale": "fallback", "explanation": ["Error"]}
             self._write_log({
