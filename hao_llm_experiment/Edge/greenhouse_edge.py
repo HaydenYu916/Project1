@@ -255,6 +255,10 @@ def flush_sensor_snapshot(ts, snapshot_state):
 
 
 def current_snapshot_state():
+    actual_ppfd = applied_ppfd_for_pwm(
+        env_state.get("current_red_pwm", 0),
+        env_state.get("current_blue_pwm", 0),
+    )
     return {
         "Tleaf": env_state.get("Tleaf"),
         "RH": env_state.get("RH"),
@@ -274,13 +278,7 @@ def current_snapshot_state():
         "Pn_pred": env_state.get("Pn_pred"),
         "Power_now_w": env_state.get("Power_now_w"),
         "requested_target_ppfd": int_target_ppfd(env_state.get("target_ppfd", 0.0)),
-        "actual_target_ppfd": int_target_ppfd(
-            effective_target_ppfd(
-                env_state.get("target_ppfd", 0.0),
-                env_state.get("current_red_pwm", 0),
-                env_state.get("current_blue_pwm", 0),
-            )
-        ),
+        "actual_target_ppfd": int_target_ppfd(actual_ppfd),
         "current_red_pwm": env_state.get("current_red_pwm", 0),
         "current_blue_pwm": env_state.get("current_blue_pwm", 0),
     }
@@ -331,6 +329,24 @@ def effective_target_ppfd(requested_ppfd, red_pwm, blue_pwm):
         return requested_ppfd
 
     return actual_ppfd if abs(actual_ppfd - requested_ppfd) > 1e-6 else requested_ppfd
+
+
+def applied_ppfd_for_pwm(red_pwm, blue_pwm):
+    red_pwm = clamp_pwm_value(red_pwm)
+    blue_pwm = clamp_pwm_value(blue_pwm)
+
+    if red_pwm == 0 and blue_pwm == 0:
+        return 0.0
+
+    model = globals().get("pwm_pkg")
+    if not model:
+        return 0.0
+
+    try:
+        return float(model["intercept"]) + float(model["slope"]) * float(red_pwm)
+    except Exception:
+        logger.exception("Failed to map applied PWM back to actual PPFD.")
+        return 0.0
 
 
 def int_target_ppfd(value):
@@ -521,11 +537,7 @@ def build_server_payload():
         env_state["current_red_pwm"],
         env_state["current_blue_pwm"],
     )
-    last_target_ppfd = effective_target_ppfd(
-        env_state.get("target_ppfd", 0.0),
-        env_state.get("current_red_pwm", 0),
-        env_state.get("current_blue_pwm", 0),
-    )
+    last_target_ppfd = float(env_state.get("target_ppfd", 0.0) or 0.0)
     return {
         "local_time": now.strftime("%H:%M"),
         "timezone": EDGE_CONFIG["timezone"],
@@ -966,6 +978,7 @@ def run_fallback_control():
         int(is_day),
         safe_ppfd,
     )
+    env_state["target_ppfd"] = float(safe_ppfd)
 
     if safe_ppfd > 0:
         try:
@@ -1034,6 +1047,8 @@ def on_message(client, userdata, msg):
                 return
         else:
             red_pwm, blue_pwm = 0, 0
+
+        env_state["target_ppfd"] = float(target_ppfd)
 
         pwm_saturated, pwm_saturation_label = get_pwm_saturation(red_pwm, blue_pwm)
 
