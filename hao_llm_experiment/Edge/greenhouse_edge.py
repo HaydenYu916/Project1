@@ -3,6 +3,7 @@ import datetime
 import json
 import logging
 import math
+import os
 import sys
 import time
 from collections import deque
@@ -18,17 +19,24 @@ except ModuleNotFoundError:
         from pip._vendor import tomli as tomllib
 
 import paho.mqtt.client as mqtt
+import pandas as pd
 
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent.parent
 MODEL_BASE_DIR = PROJECT_ROOT / "Tool" / "Model"
 SHELLY_BASE_DIR = PROJECT_ROOT / "Tool" / "LED_Shelly"
+RIOTEE_SERVER_DIR = PROJECT_ROOT / "Tool" / "Sensor_riotee_server"
+os.environ.setdefault("LIVE_LOGS_DIR", str(RIOTEE_SERVER_DIR / "logs"))
+os.environ.setdefault("LIVE_CSV_PATH", str(RIOTEE_SERVER_DIR / "logs" / "riotee_data_all.csv"))
 for module_dir in (
     BASE_DIR,
     MODEL_BASE_DIR / "PWMtoPPFD",
+    MODEL_BASE_DIR / "SPtoPPFD",
+    MODEL_BASE_DIR / "EnvtoPN",
     SHELLY_BASE_DIR / "src",
     SHELLY_BASE_DIR / "config",
+    RIOTEE_SERVER_DIR,
 ):
     module_dir_str = str(module_dir)
     if module_dir_str not in sys.path:
@@ -36,6 +44,9 @@ for module_dir in (
 
 
 import predict_pwm_from_ppfd as pwm_model
+import predict_sp_to_ppfd as sp_model
+import predict_env_to_pn as pn_model
+from riotee_live_api import get_device_latest_data as get_local_riotee_device_latest_data
 
 
 try:
@@ -51,11 +62,6 @@ TIMEZONE = ZoneInfo("Australia/Sydney")
 
 CONFIG_PATH = BASE_DIR / "edge_config.toml"
 DEFAULT_SENSOR_FIELD_MAP = {
-    "temperature": "Tleaf",
-    "co2_ppm": "Ci",
-    "humidity": "RH",
-    "ppfd_pred": "PPFD_pred",
-    "pn_pred": "Pn_pred",
     "power": "Power_now_w",
 }
 
@@ -96,7 +102,8 @@ def load_edge_config():
         "offline_timeout_seconds": int(runtime_cfg.get("offline_timeout_seconds", 1800)),
         "publish_interval_seconds": int(runtime_cfg.get("publish_interval_seconds", 900)),
         "topic_map": topic_map,
-        "co2_topic": sensor_topics["co2_ppm"],
+        "power_topic": sensor_topics["power"],
+        "temperature_topic": sensor_topics["temperature"],
         "sensor_topics": sensor_topics,
     }
 
@@ -107,6 +114,8 @@ TIMEZONE = ZoneInfo(EDGE_CONFIG["timezone"])
 # --- 1. DIRECTORY & LOGGING SETUP ---
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
+SENSOR_SNAPSHOT_DIR = LOG_DIR / "sensor_snapshots"
+SENSOR_SNAPSHOT_DIR.mkdir(exist_ok=True)
 
 timestamp_str = datetime.datetime.now(TIMEZONE).strftime("%Y%m%d")
 log_filename = LOG_DIR / f"edge_node_{timestamp_str}.log"
@@ -121,49 +130,164 @@ logging.basicConfig(
 )
 logger = logging.getLogger("GreenhouseEdge")
 
-# --- 2. CSV SETUP ---
-CSV_FILE = LOG_DIR / "greenhouse_data.csv"
-CSV_HEADERS = [
-    "Timestamp",
-    "Tleaf",
-    "Ci",
-    "RH",
-    "PPFD_Predicted",
-    "Pn_Predicted",
-    "Last_Target_PPFD",
-    "Red_PWM",
-    "Blue_PWM",
-    "Is_Offline",
-    "Data_Valid",
-    "Missing_Fields",
-    "Event",
-    "MQTT_Connected",
+SENSOR_SNAPSHOT_HEADERS = [
+    "id",
+    "timestamp",
+    "temperature",
+    "humidity",
+    "co2_ppm",
+    "ppfd_pred",
+    "pn_pred",
+    "power_now_w",
+    "last_target_ppfd",
+    "red_pwm",
+    "blue_pwm",
 ]
 
 
-def ensure_csv_file():
-    current_header = None
-    if CSV_FILE.exists():
+def sensor_snapshot_csv_path_for_day(ts=None):
+    ts = datetime.datetime.now(TIMEZONE) if ts is None else ts
+    return SENSOR_SNAPSHOT_DIR / f"{ts.strftime('%Y%m%d')}.csv"
+
+
+def ensure_sensor_snapshot_csv_file(ts=None):
+    ts = datetime.datetime.now(TIMEZONE) if ts is None else ts
+    snapshot_csv = sensor_snapshot_csv_path_for_day(ts)
+    if snapshot_csv.exists():
+        current_header = None
         try:
-            with CSV_FILE.open(mode="r", newline="", encoding="utf-8") as f:
-                current_header = next(csv.reader(f), None)
+            with snapshot_csv.open(mode="r", newline="", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if not row or row[0].startswith("#"):
+                        continue
+                    current_header = row
+                    break
         except Exception as exc:
-            logger.warning("Failed to inspect existing CSV header: %s", exc)
+            logger.warning("Failed to inspect existing sensor snapshot header: %s", exc)
 
-    if current_header == CSV_HEADERS:
-        return
+        if current_header == SENSOR_SNAPSHOT_HEADERS:
+            return snapshot_csv
 
-    if CSV_FILE.exists():
         legacy_stamp = datetime.datetime.now(TIMEZONE).strftime("%Y%m%d_%H%M%S")
-        backup_file = LOG_DIR / f"{CSV_FILE.stem}_legacy_{legacy_stamp}.csv"
-        CSV_FILE.rename(backup_file)
+        backup_file = SENSOR_SNAPSHOT_DIR / f"{snapshot_csv.stem}_legacy_{legacy_stamp}.csv"
+        snapshot_csv.rename(backup_file)
         logger.warning(
-            "CSV header changed; moved previous file to %s",
+            "Sensor snapshot header changed; moved previous file to %s",
             backup_file,
         )
 
-    with CSV_FILE.open(mode="w", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow(CSV_HEADERS)
+    start_line = f"# Start @ {ts.strftime('%Y-%m-%d %H:%M:%S')} - edge_sensor_snapshot"
+    with snapshot_csv.open(mode="w", newline="", encoding="utf-8") as f:
+        f.write(start_line + "\n")
+        csv.writer(f).writerow(SENSOR_SNAPSHOT_HEADERS)
+    return snapshot_csv
+
+
+def next_sensor_snapshot_id(snapshot_csv):
+    if not snapshot_csv.exists():
+        return 1
+
+    last_id = 0
+    try:
+        with snapshot_csv.open(mode="r", newline="", encoding="utf-8") as f:
+            for row in csv.reader(f):
+                if not row or row[0].startswith("#") or row[0] == "id":
+                    continue
+                try:
+                    last_id = int(row[0])
+                except ValueError:
+                    continue
+    except Exception:
+        logger.exception("Failed to inspect snapshot CSV for next id: %s", snapshot_csv)
+    return last_id + 1
+
+
+def sensor_snapshot_row_from_state(row_id, ts, snapshot_state):
+    return [
+        row_id,
+        ts.strftime("%Y-%m-%d %H:%M:%S"),
+        safe_csv_value(snapshot_state.get("Tleaf")),
+        safe_csv_value(snapshot_state.get("RH")),
+        safe_csv_value(snapshot_state.get("Ci")),
+        safe_csv_value(snapshot_state.get("PPFD_pred")),
+        safe_csv_value(snapshot_state.get("Pn_pred")),
+        safe_csv_value(snapshot_state.get("Power_now_w")),
+        snapshot_state.get("target_ppfd", 0.0),
+        snapshot_state.get("current_red_pwm", 0),
+        snapshot_state.get("current_blue_pwm", 0),
+    ]
+
+
+def flush_sensor_snapshot(ts, snapshot_state):
+    snapshot_csv = ensure_sensor_snapshot_csv_file(ts)
+    try:
+        row_id = next_sensor_snapshot_id(snapshot_csv)
+        with snapshot_csv.open(mode="a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(sensor_snapshot_row_from_state(row_id, ts, snapshot_state))
+    except Exception:
+        logger.exception("Failed to write sensor snapshot row for timestamp=%s", ts)
+
+
+def current_snapshot_state():
+    return {
+        "Tleaf": env_state.get("Tleaf"),
+        "RH": env_state.get("RH"),
+        "Ci": env_state.get("Ci"),
+        "PPFD_pred": env_state.get("PPFD_pred"),
+        "Pn_pred": env_state.get("Pn_pred"),
+        "Power_now_w": env_state.get("Power_now_w"),
+        "target_ppfd": env_state.get("target_ppfd", 0.0),
+        "current_red_pwm": env_state.get("current_red_pwm", 0),
+        "current_blue_pwm": env_state.get("current_blue_pwm", 0),
+    }
+
+
+pending_sensor_snapshot_second = None
+pending_sensor_snapshot_state = None
+
+
+def queue_sensor_snapshot(now=None):
+    global pending_sensor_snapshot_second, pending_sensor_snapshot_state
+
+    now = datetime.datetime.now(TIMEZONE) if now is None else now
+    current_second = now.replace(microsecond=0)
+
+    if pending_sensor_snapshot_second is None:
+        pending_sensor_snapshot_second = current_second
+    elif current_second != pending_sensor_snapshot_second:
+        if pending_sensor_snapshot_state is not None:
+            flush_sensor_snapshot(pending_sensor_snapshot_second, pending_sensor_snapshot_state)
+        pending_sensor_snapshot_second = current_second
+
+    pending_sensor_snapshot_state = current_snapshot_state()
+
+
+def flush_sensor_snapshot_if_due(now=None):
+    global pending_sensor_snapshot_second, pending_sensor_snapshot_state
+
+    if pending_sensor_snapshot_second is None or pending_sensor_snapshot_state is None:
+        return
+
+    now = datetime.datetime.now(TIMEZONE) if now is None else now
+    current_second = now.replace(microsecond=0)
+    if current_second <= pending_sensor_snapshot_second:
+        return
+
+    flush_sensor_snapshot(pending_sensor_snapshot_second, pending_sensor_snapshot_state)
+    pending_sensor_snapshot_second = None
+    pending_sensor_snapshot_state = None
+
+
+def flush_pending_sensor_snapshot():
+    global pending_sensor_snapshot_second, pending_sensor_snapshot_state
+
+    if pending_sensor_snapshot_second is None or pending_sensor_snapshot_state is None:
+        return
+
+    flush_sensor_snapshot(pending_sensor_snapshot_second, pending_sensor_snapshot_state)
+    pending_sensor_snapshot_second = None
+    pending_sensor_snapshot_state = None
 
 
 # --- 3. CONFIGURATION ---
@@ -177,12 +301,14 @@ FIXED_CO2_PPM = EDGE_CONFIG["fixed_co2_ppm"]
 TOPIC_CMD = EDGE_CONFIG["topic_cmd"]
 TOPIC_STATE = EDGE_CONFIG["topic_state"]
 TOPIC_MAP = EDGE_CONFIG["topic_map"]
+POWER_TOPIC = EDGE_CONFIG["power_topic"]
+LOCAL_DEVICE_TOPIC_ID = EDGE_CONFIG["temperature_topic"].split("/")[1]
+LOCAL_DEVICE_ID = f"{LOCAL_DEVICE_TOPIC_ID}=="
 
 STATE_REQUIRED_FIELDS = ["Tleaf", "PPFD_pred", "Pn_pred"]
 if not USE_FIXED_CO2:
     STATE_REQUIRED_FIELDS.append("Ci")
 ALL_SENSOR_FIELDS = list(TOPIC_MAP.values())
-CO2_TOPIC = EDGE_CONFIG["co2_topic"]
 
 # Global State Tracker
 env_state = {k: None for k in ALL_SENSOR_FIELDS}
@@ -204,6 +330,7 @@ last_command_time = time.time()
 is_offline_mode = False
 mqtt_connected = False
 startup_time = time.time()
+last_local_sensor_timestamp = None
 STATE_HISTORY_RETENTION_SECONDS = 15 * 60
 SHORT_WINDOW_SECONDS = 3 * 60
 LONG_WINDOW_SECONDS = 15 * 60
@@ -302,35 +429,15 @@ def current_data_valid():
 
 
 def safe_csv_value(value):
-    return "" if value is None else value
-
-
-def log_data_to_csv(event, data_valid, missing_fields=None):
-    missing_fields = missing_fields or []
-    try:
-        ts = datetime.datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
-        with CSV_FILE.open(mode="a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(
-                [
-                    ts,
-                    safe_csv_value(env_state["Tleaf"]),
-                    safe_csv_value(env_state["Ci"]),
-                    safe_csv_value(env_state["RH"]),
-                    env_state["PPFD_pred"],
-                    env_state["Pn_pred"],
-                    env_state["target_ppfd"],
-                    env_state["current_red_pwm"],
-                    env_state["current_blue_pwm"],
-                    int(is_offline_mode),
-                    int(data_valid),
-                    format_field_list(missing_fields),
-                    event,
-                    int(mqtt_connected),
-                ]
-            )
-    except Exception:
-        logger.exception("Failed to write CSV row for event=%s", event)
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return f"{value:.2f}" if math.isfinite(value) else ""
+    return value
 
 
 def apply_device_command(device_key, command, params):
@@ -365,7 +472,94 @@ def parse_nonnegative_number(raw_value, field_name, upper_bound=None):
     return value
 
 
-ensure_csv_file()
+def safe_float(value):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def read_latest_local_sensor_row():
+    try:
+        return get_local_riotee_device_latest_data(LOCAL_DEVICE_ID, include_spectral=True, include_config=False)
+    except Exception:
+        logger.exception("Failed to fetch local Riotee data via riotee_live_api.")
+        return None
+
+
+def compute_local_ppfd_pn(row):
+    spectral = row.get("spectral") or {}
+    spectrum = {key: safe_float(spectral.get(key)) for key in (
+        "sp_415", "sp_445", "sp_480", "sp_515", "sp_555", "sp_590", "sp_630", "sp_680"
+    )}
+    has_spectral_data = all(value is not None for value in spectrum.values())
+    if not has_spectral_data:
+        return None, None
+
+    temp = safe_float(row.get("temperature"))
+    if temp is None:
+        return None, None
+
+    co2 = FIXED_CO2_PPM if USE_FIXED_CO2 else safe_float(row.get("co2_ppm"))
+    if co2 is None:
+        return None, None
+
+    try:
+        sp_input = {
+            "sp_415_mean": spectrum["sp_415"],
+            "sp_445_mean": spectrum["sp_445"],
+            "sp_480_mean": spectrum["sp_480"],
+            "sp_515_mean": spectrum["sp_515"],
+            "sp_555_mean": spectrum["sp_555"],
+            "sp_590_mean": spectrum["sp_590"],
+            "sp_630_mean": spectrum["sp_630"],
+            "sp_680_mean": spectrum["sp_680"],
+        }
+        sp_df = pd.DataFrame([sp_input])
+        X_sp = sp_model.prepare_features(sp_df, sp_pkg_local["feature_columns"])
+        ppfd_pred = float(sp_pkg_local["pipeline"].predict(X_sp)[0])
+
+        pn_input = {
+            "T": temp,
+            "CO2": co2,
+            "R:B": 0.75,
+            "PPFD": ppfd_pred,
+        }
+        pn_df = pd.DataFrame([pn_input])
+        X_pn = pn_model.prepare_features(pn_df, pn_pkg_local["feature_columns"])
+        pn_pred = float(pn_pkg_local["pipeline"].predict(X_pn)[0])
+        return ppfd_pred, pn_pred
+    except Exception:
+        logger.exception("Failed to compute local PPFD/Pn from Riotee CSV row.")
+        return None, None
+
+
+def sync_local_sensor_state():
+    global last_local_sensor_timestamp
+
+    row = read_latest_local_sensor_row()
+    if row is None:
+        return
+
+    row_timestamp = row.get("timestamp")
+    if row_timestamp == last_local_sensor_timestamp:
+        return
+
+    env_state["Tleaf"] = safe_float(row.get("temperature"))
+    env_state["RH"] = safe_float(row.get("humidity"))
+    env_state["Ci"] = FIXED_CO2_PPM if USE_FIXED_CO2 else safe_float(row.get("co2_ppm"))
+
+    ppfd_pred, pn_pred = compute_local_ppfd_pn(row)
+    if ppfd_pred is not None:
+        env_state["PPFD_pred"] = ppfd_pred
+    if pn_pred is not None:
+        env_state["Pn_pred"] = pn_pred
+
+    last_local_sensor_timestamp = row_timestamp
+    queue_sensor_snapshot()
+    record_state_snapshot()
+
 
 # Load PWM model
 logger.info("Loading PWM control model...")
@@ -373,6 +567,13 @@ try:
     pwm_pkg = pwm_model.load_model(None)
 except Exception:
     logger.exception("Failed to load PWM model package.")
+    raise
+
+try:
+    sp_pkg_local = sp_model.load_package(sp_model.DEFAULT_MODEL_PACKAGE)
+    pn_pkg_local = pn_model.load_package(pn_model.DEFAULT_MODEL_PACKAGE)
+except Exception:
+    logger.exception("Failed to load local SP/PN model packages.")
     raise
 
 
@@ -390,7 +591,6 @@ def calculate_and_publish_state(client):
             "Skipping state publish because required sensor data is missing: %s",
             format_field_list(missing_model_fields),
         )
-        log_data_to_csv("state_skipped_missing_data", False, missing_sensor_fields)
         return
 
     payload = build_server_payload()
@@ -418,9 +618,6 @@ def calculate_and_publish_state(client):
             logger.exception("Computed greenhouse state but MQTT publish failed.")
     else:
         logger.warning("MQTT disconnected; state snapshot prepared locally without publishing.")
-
-    log_data_to_csv(event, True, missing_sensor_fields)
-
 
 def run_fallback_control():
     global env_state, is_offline_mode
@@ -461,9 +658,6 @@ def run_fallback_control():
         "Light.Set",
         {"id": 0, "on": blue_pwm > 0, "brightness": blue_pwm},
     )
-
-    log_data_to_csv("fallback_applied", current_data_valid(), get_missing_fields(ALL_SENSOR_FIELDS))
-
 
 def on_message(client, userdata, msg):
     global last_command_time, is_offline_mode, env_state
@@ -535,21 +729,10 @@ def on_message(client, userdata, msg):
             "Light.Set",
             {"id": 0, "on": blue_pwm > 0, "brightness": blue_pwm},
         )
-        log_data_to_csv(
-            "cloud_command_applied",
-            current_data_valid(),
-            get_missing_fields(ALL_SENSOR_FIELDS),
-        )
         return
 
-    if topic not in TOPIC_MAP:
+    if topic != POWER_TOPIC:
         logger.debug("Ignoring unmapped MQTT topic: %s", topic)
-        return
-
-    if USE_FIXED_CO2 and topic == CO2_TOPIC:
-        env_state["Ci"] = FIXED_CO2_PPM
-        logger.debug("Ignoring MQTT CO2 payload because fixed CO2 mode is enabled.")
-        record_state_snapshot()
         return
 
     try:
@@ -562,7 +745,8 @@ def on_message(client, userdata, msg):
         logger.warning("Ignoring non-finite sensor payload on topic=%s payload=%r", topic, payload)
         return
 
-    env_state[TOPIC_MAP[topic]] = value
+    env_state["Power_now_w"] = value
+    queue_sensor_snapshot()
     record_state_snapshot()
 
 
@@ -577,8 +761,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
         reason_code,
     )
     client.subscribe(TOPIC_CMD)
-    for topic in TOPIC_MAP:
-        client.subscribe(topic)
+    client.subscribe(POWER_TOPIC)
 
 
 def on_disconnect(client, userdata, flags, reason_code, properties):
@@ -625,6 +808,8 @@ if __name__ == "__main__":
     try:
         while True:
             current_time = time.time()
+            sync_local_sensor_state()
+            flush_sensor_snapshot_if_due(datetime.datetime.now(TIMEZONE))
 
             if current_time - last_command_time > OFFLINE_TIMEOUT_SECONDS and not is_offline_mode:
                 is_offline_mode = True
@@ -642,5 +827,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("Shutting down greenhouse edge node.")
     finally:
+        flush_pending_sensor_snapshot()
         client.loop_stop()
         client.disconnect()

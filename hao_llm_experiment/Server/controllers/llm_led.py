@@ -39,6 +39,14 @@ def _build_prompt(observations: Dict[str, Any], context: Dict[str, Any], forecas
         '\n[Physics_Context]\n' + json.dumps(context),
         '\n[Outdoor Temperature]\n' + json.dumps(forecast),
         '\n[Objectives_And_Penalties]\n' + json.dumps(policy),
+        "\n[Actuator_Constraints]\n"
+        "- LED actuator limits are hard bounds.\n"
+        "- Red PWM range: 0 to 100 percent.\n"
+        "- Blue PWM range: 0 to 100 percent.\n"
+        "- Values above 100 percent cannot be executed by the hardware.\n"
+        "- If the requested target_ppfd would require either LED channel to exceed 100 percent PWM, the edge node will saturate at the hardware limit.\n"
+        "- Once PWM is saturated, increasing target_ppfd further may not increase actual PPFD.\n"
+        "- Choose a realistic target_ppfd that respects actuator saturation and current plant conditions.\n",
         "\n[Reasoning_Instructions]\n"
         "- Respect actuator limits.\n"
         "- Check 'local_time' and 'is_day'. If night, set target_ppfd to 0.0 for dark respiration.\n"
