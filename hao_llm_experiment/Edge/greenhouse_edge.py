@@ -543,7 +543,7 @@ def build_server_payload():
     return {
         "local_time": now.strftime("%H:%M"),
         "timezone": EDGE_CONFIG["timezone"],
-        "is_day": 1 if 6 <= now.hour < 18 else 0,
+        "is_day": 1 if 7 <= now.hour < 23 else 0,
         "tleaf_now": env_state["Tleaf"],
         "co2_now": env_state["Ci"],
         "ppfd_now": env_state["PPFD_pred"],
@@ -999,7 +999,7 @@ def run_fallback_control():
     global env_state, is_offline_mode
 
     now = datetime.datetime.now(TIMEZONE)
-    is_day = 6 <= now.hour < 18
+    is_day = 7 <= now.hour < 23
 
     safe_ppfd = 250.0 if is_day else 0.0
 

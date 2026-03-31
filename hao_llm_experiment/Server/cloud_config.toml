@@ -22,4 +22,4 @@ fixed_ppm = 400.0
 edge_timeout_seconds = 2000
 
 [llm]
-model_name = "gpt-oss:120b"
+model_name = "gpt-oss:20b"
