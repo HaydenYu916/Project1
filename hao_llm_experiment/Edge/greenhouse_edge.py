@@ -243,6 +243,20 @@ def current_snapshot_state():
     }
 
 
+def get_pwm_saturation(red_pwm, blue_pwm):
+    red_sat = int(red_pwm >= 100)
+    blue_sat = int(blue_pwm >= 100)
+    if red_sat and blue_sat:
+        label = "both"
+    elif red_sat:
+        label = "red"
+    elif blue_sat:
+        label = "blue"
+    else:
+        label = "none"
+    return red_sat or blue_sat, label
+
+
 pending_sensor_snapshot_second = None
 pending_sensor_snapshot_state = None
 
@@ -405,6 +419,10 @@ def _delta_from_window(field_name, window_seconds, fallback_value=0.0):
 
 def build_server_payload():
     now = datetime.datetime.now(TIMEZONE)
+    pwm_saturated, pwm_saturation_label = get_pwm_saturation(
+        env_state["current_red_pwm"],
+        env_state["current_blue_pwm"],
+    )
     return {
         "local_time": now.strftime("%H:%M"),
         "timezone": EDGE_CONFIG["timezone"],
@@ -414,6 +432,10 @@ def build_server_payload():
         "ppfd_now": env_state["PPFD_pred"],
         "pn_now": env_state["Pn_pred"],
         "power_now_w": env_state["Power_now_w"],
+        "current_red_pwm": env_state["current_red_pwm"],
+        "current_blue_pwm": env_state["current_blue_pwm"],
+        "pwm_saturated": int(pwm_saturated),
+        "pwm_saturation_label": pwm_saturation_label,
         "tleaf_avg_3min": _average_from_window("Tleaf", SHORT_WINDOW_SECONDS, env_state["Tleaf"]),
         "pn_avg_3min": _average_from_window("Pn_pred", SHORT_WINDOW_SECONDS, env_state["Pn_pred"]),
         "tleaf_delta_15min": _delta_from_window("Tleaf", LONG_WINDOW_SECONDS),
@@ -711,12 +733,14 @@ def on_message(client, userdata, msg):
         env_state["target_ppfd"] = target_ppfd
         env_state["current_red_pwm"] = red_pwm
         env_state["current_blue_pwm"] = blue_pwm
+        pwm_saturated, pwm_saturation_label = get_pwm_saturation(red_pwm, blue_pwm)
 
         logger.info(
-            "Applying cloud command: target_ppfd=%.2f red_pwm=%d blue_pwm=%d",
+            "Applying cloud command: target_ppfd=%.2f red_pwm=%d blue_pwm=%d saturated=%s",
             target_ppfd,
             red_pwm,
             blue_pwm,
+            pwm_saturation_label,
         )
 
         apply_device_command(

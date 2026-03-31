@@ -129,13 +129,16 @@ def on_message(client, userdata, msg):
 
         state = json.loads(msg.payload.decode())
         logger.info(
-            "📩 Received core state: local_time=%s tz=%s ppfd_now=%.1f pn_now=%.2f tleaf_now=%.2f last_target_ppfd=%.1f valid=%s",
+            "📩 Received core state: local_time=%s tz=%s ppfd_now=%.1f pn_now=%.2f tleaf_now=%.2f last_target_ppfd=%.1f red_pwm=%s blue_pwm=%s saturated=%s valid=%s",
             state.get("local_time", "--:--"),
             state.get("timezone", "unknown"),
             state.get("ppfd_now", 0.0),
             state.get("pn_now", 0.0),
             state.get("tleaf_now", 0.0),
             state.get("last_target_ppfd", 0.0),
+            state.get("current_red_pwm", 0),
+            state.get("current_blue_pwm", 0),
+            state.get("pwm_saturation_label", "none"),
             int(bool(state.get("sensor_data_valid", False))),
         )
 
@@ -157,6 +160,10 @@ def on_message(client, userdata, msg):
             "ppfd_now": state.get("ppfd_now", 0.0),
             "pn_now": state.get("pn_now", 0.0),
             "power_now_w": state.get("power_now_w", 0.0),
+            "current_red_pwm": state.get("current_red_pwm", 0),
+            "current_blue_pwm": state.get("current_blue_pwm", 0),
+            "pwm_saturated": state.get("pwm_saturated", 0),
+            "pwm_saturation_label": state.get("pwm_saturation_label", "none"),
         }
         physics_ctx = {
             "tleaf_avg_3min": state.get("tleaf_avg_3min", state.get("tleaf_now", 25.0)),
@@ -164,6 +171,10 @@ def on_message(client, userdata, msg):
             "tleaf_delta_15min": state.get("tleaf_delta_15min", 0.0),
             "pn_delta_15min": state.get("pn_delta_15min", 0.0),
             "last_target_ppfd": state.get("last_target_ppfd", 0.0),
+            "current_red_pwm": state.get("current_red_pwm", 0),
+            "current_blue_pwm": state.get("current_blue_pwm", 0),
+            "pwm_saturated": state.get("pwm_saturated", 0),
+            "pwm_saturation_label": state.get("pwm_saturation_label", "none"),
             "electricity_price_$per_kWh": 0.20,
         }
         forecast = {
