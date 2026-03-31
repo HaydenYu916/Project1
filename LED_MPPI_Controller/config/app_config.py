@@ -22,8 +22,8 @@ TARGET_TEMPERATURE = 25.0
 
 # ==================== 设备配置 ====================
 # LED设备IP地址
-RED_LED_IP = "192.168.50.94"
-BLUE_LED_IP = "192.168.50.69"
+RED_LED_IP = "192.168.0.46"
+BLUE_LED_IP = "192.168.0.63"
 
 # 状态检查延迟（秒）
 STATUS_CHECK_DELAY = 3

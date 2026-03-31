@@ -102,7 +102,7 @@ class RioteeDataReader:
                 'spectral_gain': self._safe_float(row.get('spectral_gain')),
                 'sleep_time': self._safe_float(row.get('sleep_time')),
             }
-            
+
             # 添加光谱数据
             spectral_data = {}
             wavelengths = [415, 445, 480, 515, 555, 590, 630, 680]
@@ -161,7 +161,7 @@ class RioteeDataReader:
                         'spectral_gain': self._safe_float(row.get('spectral_gain')),
                         'sleep_time': self._safe_float(row.get('sleep_time')),
                     }
-                    
+
                     # 添加光谱数据
                     spectral_data = {}
                     wavelengths = [415, 445, 480, 515, 555, 590, 630, 680]

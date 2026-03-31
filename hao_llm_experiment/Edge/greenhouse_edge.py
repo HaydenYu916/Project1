@@ -360,6 +360,8 @@ pending_sensor_snapshot_second = None
 pending_sensor_snapshot_state = None
 LIGHT_STATUS_TIMEOUT_SECONDS = 5.0
 LIGHT_STATUS_POLL_SECONDS = 0.2
+LIGHT_APPLY_MAX_ATTEMPTS = 3
+LIGHT_APPLY_RETRY_DELAY_SECONDS = 1.0
 
 
 def queue_sensor_snapshot(now=None):
@@ -727,67 +729,95 @@ def apply_and_confirm_light_state(target_ppfd, red_pwm, blue_pwm, source_label):
         "Red": int(red_pwm),
         "Blue": int(blue_pwm),
     }
-    send_errors = {}
-
-    for device_key, pwm_value in desired.items():
-        try:
-            apply_device_command(
-                device_key,
-                "Light.Set",
-                {"id": 0, "on": pwm_value > 0, "brightness": pwm_value},
-            )
-        except Exception as exc:
-            send_errors[device_key] = str(exc)
-            logger.exception(
-                "Failed to send %s light command for %s: target_ppfd=%.2f requested_pwm=%d",
-                source_label,
-                device_key,
-                target_ppfd,
-                pwm_value,
-            )
-
-    deadline = time.time() + LIGHT_STATUS_TIMEOUT_SECONDS
     last_status = {}
-    while time.time() < deadline:
-        all_matched = True
+    last_send_errors = {}
+
+    for attempt in range(1, LIGHT_APPLY_MAX_ATTEMPTS + 1):
+        send_errors = {}
+
         for device_key, pwm_value in desired.items():
             try:
-                light_status = get_device_light_status(device_key)
-            except Exception:
-                logger.exception("Failed to read %s status while verifying PWM", device_key)
-                all_matched = False
-                continue
-
-            last_status[device_key] = light_status
-            if not light_status_matches_target(light_status, pwm_value):
-                all_matched = False
-
-        if all_matched:
-            env_state["target_ppfd"] = float(target_ppfd)
-            env_state["current_red_pwm"] = desired["Red"]
-            env_state["current_blue_pwm"] = desired["Blue"]
-            if send_errors:
-                logger.warning(
-                    "Confirmed requested %s light state despite send errors: target_ppfd=%.2f errors=%s",
-                    source_label,
-                    target_ppfd,
-                    send_errors,
+                apply_device_command(
+                    device_key,
+                    "Light.Set",
+                    {"id": 0, "on": pwm_value > 0, "brightness": pwm_value},
                 )
-            persist_control_state()
-            return True
+            except Exception as exc:
+                send_errors[device_key] = str(exc)
+                logger.exception(
+                    "Failed to send %s light command for %s on attempt %d/%d: target_ppfd=%.2f requested_pwm=%d",
+                    source_label,
+                    device_key,
+                    attempt,
+                    LIGHT_APPLY_MAX_ATTEMPTS,
+                    target_ppfd,
+                    pwm_value,
+                )
 
-        time.sleep(LIGHT_STATUS_POLL_SECONDS)
+        deadline = time.time() + LIGHT_STATUS_TIMEOUT_SECONDS
+        last_status = {}
+        while time.time() < deadline:
+            all_matched = True
+            for device_key, pwm_value in desired.items():
+                try:
+                    light_status = get_device_light_status(device_key)
+                except Exception:
+                    logger.exception(
+                        "Failed to read %s status while verifying PWM on attempt %d/%d",
+                        device_key,
+                        attempt,
+                        LIGHT_APPLY_MAX_ATTEMPTS,
+                    )
+                    all_matched = False
+                    continue
+
+                last_status[device_key] = light_status
+                if not light_status_matches_target(light_status, pwm_value):
+                    all_matched = False
+
+            if all_matched:
+                env_state["current_red_pwm"] = desired["Red"]
+                env_state["current_blue_pwm"] = desired["Blue"]
+                if send_errors:
+                    logger.warning(
+                        "Confirmed requested %s light state on attempt %d/%d despite send errors: target_ppfd=%.2f errors=%s",
+                        source_label,
+                        attempt,
+                        LIGHT_APPLY_MAX_ATTEMPTS,
+                        target_ppfd,
+                        send_errors,
+                    )
+                persist_control_state()
+                return True
+
+            time.sleep(LIGHT_STATUS_POLL_SECONDS)
+
+        last_send_errors = send_errors
+        if attempt < LIGHT_APPLY_MAX_ATTEMPTS:
+            logger.warning(
+                "Retrying %s light command after attempt %d/%d: target_ppfd=%.2f requested_red=%d requested_blue=%d last_red=%s last_blue=%s send_errors=%s",
+                source_label,
+                attempt,
+                LIGHT_APPLY_MAX_ATTEMPTS,
+                target_ppfd,
+                red_pwm,
+                blue_pwm,
+                last_status.get("Red"),
+                last_status.get("Blue"),
+                send_errors,
+            )
+            time.sleep(LIGHT_APPLY_RETRY_DELAY_SECONDS)
 
     logger.warning(
-        "Light status did not reach requested %s target within %.1fs: target_ppfd=%.2f requested_red=%d requested_blue=%d last_red=%s last_blue=%s send_errors=%s",
+        "Light status did not reach requested %s target after %d attempts: target_ppfd=%.2f requested_red=%d requested_blue=%d last_red=%s last_blue=%s send_errors=%s",
         source_label,
-        LIGHT_STATUS_TIMEOUT_SECONDS,
+        LIGHT_APPLY_MAX_ATTEMPTS,
         target_ppfd,
         red_pwm,
         blue_pwm,
         last_status.get("Red"),
         last_status.get("Blue"),
-        send_errors,
+        last_send_errors,
     )
     return False
 
@@ -1006,10 +1036,6 @@ def on_message(client, userdata, msg):
     payload = msg.payload.decode(errors="replace")
 
     if topic == TOPIC_CMD:
-        if getattr(msg, "retain", False):
-            logger.info("Ignoring retained cloud command on startup: payload=%s", payload)
-            return
-
         last_command_time = time.time()
         if is_offline_mode:
             logger.info("Cloud command stream resumed; leaving fallback control mode.")
@@ -1027,11 +1053,10 @@ def on_message(client, userdata, msg):
             logger.warning("Ignoring command with invalid values: %s payload=%s", exc, payload)
             return
 
-        # Protect the lights during restarts: ignore an immediate zero setpoint
-        # that arrives right after connect, even if the broker/client did not
-        # surface the message as retained to this process.
-        if time.time() - startup_time < 15 and target_ppfd == 0:
-            logger.info("Ignoring startup zero cloud command: payload=%s", payload)
+        # On restart, keep the last non-zero light level unless the broker
+        # provides a fresh non-retained command or an explicit retained zero.
+        if time.time() - startup_time < 15 and target_ppfd == 0 and getattr(msg, "retain", False):
+            logger.info("Ignoring retained startup zero cloud command: payload=%s", payload)
             return
 
         if target_ppfd > 0:
