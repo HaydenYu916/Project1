@@ -136,11 +136,23 @@ SENSOR_SNAPSHOT_HEADERS = [
     "timestamp",
     "temperature",
     "humidity",
+    "a1_raw",
+    "vcap_raw",
+    "sleep_time",
+    "sp_415",
+    "sp_445",
+    "sp_480",
+    "sp_515",
+    "sp_555",
+    "sp_590",
+    "sp_630",
+    "sp_680",
     "co2_ppm",
     "ppfd_pred",
     "pn_pred",
     "power_now_w",
-    "last_target_ppfd",
+    "target_ppfd",
+    "actual_ppfd",
     "red_pwm",
     "blue_pwm",
 ]
@@ -210,11 +222,23 @@ def sensor_snapshot_row_from_state(row_id, ts, snapshot_state):
         ts.strftime("%Y-%m-%d %H:%M:%S"),
         safe_csv_value(snapshot_state.get("Tleaf")),
         safe_csv_value(snapshot_state.get("RH")),
+        safe_csv_value(snapshot_state.get("a1_raw")),
+        safe_csv_value(snapshot_state.get("vcap_raw")),
+        safe_csv_value(snapshot_state.get("sleep_time")),
+        safe_csv_value(snapshot_state.get("sp_415")),
+        safe_csv_value(snapshot_state.get("sp_445")),
+        safe_csv_value(snapshot_state.get("sp_480")),
+        safe_csv_value(snapshot_state.get("sp_515")),
+        safe_csv_value(snapshot_state.get("sp_555")),
+        safe_csv_value(snapshot_state.get("sp_590")),
+        safe_csv_value(snapshot_state.get("sp_630")),
+        safe_csv_value(snapshot_state.get("sp_680")),
         safe_csv_value(snapshot_state.get("Ci")),
         safe_csv_value(snapshot_state.get("PPFD_pred")),
         safe_csv_value(snapshot_state.get("Pn_pred")),
         safe_csv_value(snapshot_state.get("Power_now_w")),
-        snapshot_state.get("target_ppfd", 0.0),
+        snapshot_state.get("requested_target_ppfd", 0),
+        snapshot_state.get("actual_target_ppfd", 0),
         snapshot_state.get("current_red_pwm", 0),
         snapshot_state.get("current_blue_pwm", 0),
     ]
@@ -234,11 +258,29 @@ def current_snapshot_state():
     return {
         "Tleaf": env_state.get("Tleaf"),
         "RH": env_state.get("RH"),
+        "a1_raw": env_state.get("a1_raw"),
+        "vcap_raw": env_state.get("vcap_raw"),
+        "sleep_time": env_state.get("sleep_time"),
+        "sp_415": env_state.get("sp_415"),
+        "sp_445": env_state.get("sp_445"),
+        "sp_480": env_state.get("sp_480"),
+        "sp_515": env_state.get("sp_515"),
+        "sp_555": env_state.get("sp_555"),
+        "sp_590": env_state.get("sp_590"),
+        "sp_630": env_state.get("sp_630"),
+        "sp_680": env_state.get("sp_680"),
         "Ci": env_state.get("Ci"),
         "PPFD_pred": env_state.get("PPFD_pred"),
         "Pn_pred": env_state.get("Pn_pred"),
         "Power_now_w": env_state.get("Power_now_w"),
-        "target_ppfd": env_state.get("target_ppfd", 0.0),
+        "requested_target_ppfd": int_target_ppfd(env_state.get("target_ppfd", 0.0)),
+        "actual_target_ppfd": int_target_ppfd(
+            effective_target_ppfd(
+                env_state.get("target_ppfd", 0.0),
+                env_state.get("current_red_pwm", 0),
+                env_state.get("current_blue_pwm", 0),
+            )
+        ),
         "current_red_pwm": env_state.get("current_red_pwm", 0),
         "current_blue_pwm": env_state.get("current_blue_pwm", 0),
     }
@@ -268,8 +310,40 @@ def clamp_pwm_value(value):
     return max(4, min(100, pwm_value))
 
 
+def effective_target_ppfd(requested_ppfd, red_pwm, blue_pwm):
+    requested_ppfd = float(requested_ppfd or 0.0)
+    red_pwm = clamp_pwm_value(red_pwm)
+    blue_pwm = clamp_pwm_value(blue_pwm)
+
+    if red_pwm == 0 and blue_pwm == 0:
+        return 0.0
+
+    model = globals().get("pwm_pkg")
+    if not model:
+        return requested_ppfd
+
+    try:
+        actual_ppfd = float(model["intercept"]) + float(model["slope"]) * float(red_pwm)
+    except Exception:
+        logger.exception(
+            "Failed to map applied PWM back to PPFD; using requested target_ppfd instead."
+        )
+        return requested_ppfd
+
+    return actual_ppfd if abs(actual_ppfd - requested_ppfd) > 1e-6 else requested_ppfd
+
+
+def int_target_ppfd(value):
+    try:
+        return int(round(float(value or 0.0)))
+    except (TypeError, ValueError):
+        return 0
+
+
 pending_sensor_snapshot_second = None
 pending_sensor_snapshot_state = None
+LIGHT_STATUS_TIMEOUT_SECONDS = 5.0
+LIGHT_STATUS_POLL_SECONDS = 0.2
 
 
 def queue_sensor_snapshot(now=None):
@@ -334,9 +408,22 @@ STATE_REQUIRED_FIELDS = ["Tleaf", "PPFD_pred", "Pn_pred"]
 if not USE_FIXED_CO2:
     STATE_REQUIRED_FIELDS.append("Ci")
 ALL_SENSOR_FIELDS = list(TOPIC_MAP.values())
+LOCAL_SENSOR_EXTRA_FIELDS = [
+    "a1_raw",
+    "vcap_raw",
+    "sleep_time",
+    "sp_415",
+    "sp_445",
+    "sp_480",
+    "sp_515",
+    "sp_555",
+    "sp_590",
+    "sp_630",
+    "sp_680",
+]
 
 # Global State Tracker
-env_state = {k: None for k in ALL_SENSOR_FIELDS}
+env_state = {k: None for k in ALL_SENSOR_FIELDS + LOCAL_SENSOR_EXTRA_FIELDS}
 env_state.update(
     {
         "Ci": FIXED_CO2_PPM if USE_FIXED_CO2 else None,
@@ -434,6 +521,11 @@ def build_server_payload():
         env_state["current_red_pwm"],
         env_state["current_blue_pwm"],
     )
+    last_target_ppfd = effective_target_ppfd(
+        env_state.get("target_ppfd", 0.0),
+        env_state.get("current_red_pwm", 0),
+        env_state.get("current_blue_pwm", 0),
+    )
     return {
         "local_time": now.strftime("%H:%M"),
         "timezone": EDGE_CONFIG["timezone"],
@@ -451,7 +543,7 @@ def build_server_payload():
         "pn_avg_3min": _average_from_window("Pn_pred", SHORT_WINDOW_SECONDS, env_state["Pn_pred"]),
         "tleaf_delta_15min": _delta_from_window("Tleaf", LONG_WINDOW_SECONDS),
         "pn_delta_15min": _delta_from_window("Pn_pred", LONG_WINDOW_SECONDS),
-        "last_target_ppfd": env_state["target_ppfd"],
+        "last_target_ppfd": last_target_ppfd,
         "sensor_data_valid": current_data_valid(),
         "missing_fields": get_missing_fields(STATE_REQUIRED_FIELDS),
     }
@@ -493,13 +585,31 @@ def read_last_control_state_from_snapshots():
 
     try:
         with snapshot_csv.open(mode="r", newline="", encoding="utf-8") as f:
-            rows = list(csv.reader(f))
+            data_rows = [
+                row for row in csv.reader(f)
+                if row and not row[0].startswith("#")
+            ]
+        if not data_rows:
+            return None
+
+        header = data_rows[0]
+        rows = data_rows[1:]
+        header_index = {name: idx for idx, name in enumerate(header)}
+        target_idx = header_index.get("target_ppfd")
+        if target_idx is None:
+            target_idx = header_index.get("last_target_ppfd")
+        red_idx = header_index.get("red_pwm")
+        blue_idx = header_index.get("blue_pwm")
+
+        if target_idx is None or red_idx is None or blue_idx is None:
+            return None
+
         for row in reversed(rows):
-            if not row or row[0].startswith("#") or row[0] == "id" or len(row) < 11:
+            if len(row) <= max(target_idx, red_idx, blue_idx):
                 continue
-            target_ppfd = safe_float(row[8])
-            red_pwm = clamp_pwm_value(row[9] or 0)
-            blue_pwm = clamp_pwm_value(row[10] or 0)
+            target_ppfd = safe_float(row[target_idx])
+            red_pwm = clamp_pwm_value(row[red_idx] or 0)
+            blue_pwm = clamp_pwm_value(row[blue_idx] or 0)
             if target_ppfd is None:
                 continue
             if target_ppfd > 0 or red_pwm > 0 or blue_pwm > 0:
@@ -555,33 +665,119 @@ def restore_control_state():
 def apply_current_light_state():
     red_pwm = clamp_pwm_value(env_state.get("current_red_pwm", 0))
     blue_pwm = clamp_pwm_value(env_state.get("current_blue_pwm", 0))
-    apply_device_command(
-        "Red",
-        "Light.Set",
-        {"id": 0, "on": red_pwm > 0, "brightness": red_pwm},
+    apply_and_confirm_light_state(
+        float(env_state.get("target_ppfd", 0.0) or 0.0),
+        red_pwm,
+        blue_pwm,
+        "restored",
     )
-    apply_device_command(
-        "Blue",
-        "Light.Set",
-        {"id": 0, "on": blue_pwm > 0, "brightness": blue_pwm},
-    )
-    persist_control_state()
 
 
 def apply_device_command(device_key, command, params):
     if device_key not in DEVICES:
         logger.debug("Skipping %s command because the device is not configured.", device_key)
-        return
+        return None
 
-    try:
-        rpc(DEVICES[device_key], command, params)
-    except Exception:
-        logger.exception(
-            "Failed to control device=%s command=%s params=%s",
-            device_key,
-            command,
-            params,
+    response = rpc(DEVICES[device_key], command, params)
+    if isinstance(response, dict) and response.get("error"):
+        raise RuntimeError(str(response["error"]))
+    return response
+
+
+def get_device_light_status(device_key):
+    if device_key not in DEVICES:
+        return None
+
+    response = rpc(DEVICES[device_key], "Shelly.GetStatus")
+    if isinstance(response, dict) and response.get("error"):
+        raise RuntimeError(str(response["error"]))
+    if not isinstance(response, dict):
+        raise RuntimeError(
+            f"Unexpected status payload type for {device_key}: {type(response).__name__}"
         )
+
+    light_status = response.get("light:0", {})
+    if not isinstance(light_status, dict):
+        raise RuntimeError(f"Missing light:0 status payload for {device_key}")
+    return light_status
+
+
+def light_status_matches_target(light_status, target_pwm):
+    brightness = safe_float(light_status.get("brightness"))
+    output = bool(light_status.get("output"))
+    if target_pwm <= 0:
+        return (brightness in (None, 0)) or (brightness == 0 and not output)
+    return brightness is not None and int(round(brightness)) == int(target_pwm) and output
+
+
+def apply_and_confirm_light_state(target_ppfd, red_pwm, blue_pwm, source_label):
+    desired = {
+        "Red": int(red_pwm),
+        "Blue": int(blue_pwm),
+    }
+    send_errors = {}
+
+    for device_key, pwm_value in desired.items():
+        try:
+            apply_device_command(
+                device_key,
+                "Light.Set",
+                {"id": 0, "on": pwm_value > 0, "brightness": pwm_value},
+            )
+        except Exception as exc:
+            send_errors[device_key] = str(exc)
+            logger.exception(
+                "Failed to send %s light command for %s: target_ppfd=%.2f requested_pwm=%d",
+                source_label,
+                device_key,
+                target_ppfd,
+                pwm_value,
+            )
+
+    deadline = time.time() + LIGHT_STATUS_TIMEOUT_SECONDS
+    last_status = {}
+    while time.time() < deadline:
+        all_matched = True
+        for device_key, pwm_value in desired.items():
+            try:
+                light_status = get_device_light_status(device_key)
+            except Exception:
+                logger.exception("Failed to read %s status while verifying PWM", device_key)
+                all_matched = False
+                continue
+
+            last_status[device_key] = light_status
+            if not light_status_matches_target(light_status, pwm_value):
+                all_matched = False
+
+        if all_matched:
+            env_state["target_ppfd"] = float(target_ppfd)
+            env_state["current_red_pwm"] = desired["Red"]
+            env_state["current_blue_pwm"] = desired["Blue"]
+            if send_errors:
+                logger.warning(
+                    "Confirmed requested %s light state despite send errors: target_ppfd=%.2f errors=%s",
+                    source_label,
+                    target_ppfd,
+                    send_errors,
+                )
+            persist_control_state()
+            return True
+
+        time.sleep(LIGHT_STATUS_POLL_SECONDS)
+
+    logger.warning(
+        "Light status did not reach requested %s target within %.1fs: target_ppfd=%.2f requested_red=%d requested_blue=%d last_red=%s last_blue=%s send_errors=%s",
+        source_label,
+        LIGHT_STATUS_TIMEOUT_SECONDS,
+        target_ppfd,
+        red_pwm,
+        blue_pwm,
+        last_status.get("Red"),
+        last_status.get("Blue"),
+        send_errors,
+    )
+    return False
 
 
 def parse_nonnegative_number(raw_value, field_name, upper_bound=None):
@@ -674,8 +870,16 @@ def sync_local_sensor_state():
     if row_timestamp == last_local_sensor_timestamp:
         return
 
+    spectral = row.get("spectral") or {}
     env_state["Tleaf"] = safe_float(row.get("temperature"))
     env_state["RH"] = safe_float(row.get("humidity"))
+    env_state["a1_raw"] = safe_float(row.get("a1_raw"))
+    env_state["vcap_raw"] = safe_float(row.get("vcap_raw"))
+    env_state["sleep_time"] = safe_float(row.get("sleep_time"))
+    for field_name in (
+        "sp_415", "sp_445", "sp_480", "sp_515", "sp_555", "sp_590", "sp_630", "sp_680"
+    ):
+        env_state[field_name] = safe_float(spectral.get(field_name))
     env_state["Ci"] = FIXED_CO2_PPM if USE_FIXED_CO2 else safe_float(row.get("co2_ppm"))
 
     ppfd_pred, pn_pred = compute_local_ppfd_pn(row)
@@ -774,20 +978,13 @@ def run_fallback_control():
     else:
         red_pwm, blue_pwm = 0, 0
 
-    env_state["target_ppfd"] = safe_ppfd
-    env_state["current_red_pwm"] = red_pwm
-    env_state["current_blue_pwm"] = blue_pwm
-
-    apply_device_command(
-        "Red",
-        "Light.Set",
-        {"id": 0, "on": red_pwm > 0, "brightness": red_pwm},
-    )
-    apply_device_command(
-        "Blue",
-        "Light.Set",
-        {"id": 0, "on": blue_pwm > 0, "brightness": blue_pwm},
-    )
+    if not apply_and_confirm_light_state(safe_ppfd, red_pwm, blue_pwm, "fallback"):
+        logger.warning(
+            "Fallback light command was not confirmed by Shelly status: target_ppfd=%.2f red_pwm=%d blue_pwm=%d",
+            safe_ppfd,
+            red_pwm,
+            blue_pwm,
+        )
 
 def on_message(client, userdata, msg):
     global last_command_time, is_offline_mode, env_state
@@ -838,9 +1035,6 @@ def on_message(client, userdata, msg):
         else:
             red_pwm, blue_pwm = 0, 0
 
-        env_state["target_ppfd"] = target_ppfd
-        env_state["current_red_pwm"] = red_pwm
-        env_state["current_blue_pwm"] = blue_pwm
         pwm_saturated, pwm_saturation_label = get_pwm_saturation(red_pwm, blue_pwm)
 
         logger.info(
@@ -851,17 +1045,13 @@ def on_message(client, userdata, msg):
             pwm_saturation_label,
         )
 
-        apply_device_command(
-            "Red",
-            "Light.Set",
-            {"id": 0, "on": red_pwm > 0, "brightness": red_pwm},
-        )
-        apply_device_command(
-            "Blue",
-            "Light.Set",
-            {"id": 0, "on": blue_pwm > 0, "brightness": blue_pwm},
-        )
-        persist_control_state()
+        if not apply_and_confirm_light_state(target_ppfd, red_pwm, blue_pwm, "cloud"):
+            logger.warning(
+                "Skipped PWM state update because Shelly status did not confirm cloud target: target_ppfd=%.2f red_pwm=%d blue_pwm=%d",
+                target_ppfd,
+                red_pwm,
+                blue_pwm,
+            )
         return
 
     if topic != POWER_TOPIC:
