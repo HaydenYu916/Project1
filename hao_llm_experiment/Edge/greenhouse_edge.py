@@ -258,6 +258,16 @@ def get_pwm_saturation(red_pwm, blue_pwm):
     return red_sat or blue_sat, label
 
 
+def clamp_pwm_value(value):
+    try:
+        pwm_value = int(round(float(value)))
+    except (TypeError, ValueError):
+        return 0
+    if pwm_value <= 0:
+        return 0
+    return max(4, min(100, pwm_value))
+
+
 pending_sensor_snapshot_second = None
 pending_sensor_snapshot_state = None
 
@@ -466,8 +476,8 @@ def safe_csv_value(value):
 def persist_control_state():
     payload = {
         "target_ppfd": float(env_state.get("target_ppfd", 0.0) or 0.0),
-        "current_red_pwm": int(env_state.get("current_red_pwm", 0) or 0),
-        "current_blue_pwm": int(env_state.get("current_blue_pwm", 0) or 0),
+        "current_red_pwm": clamp_pwm_value(env_state.get("current_red_pwm", 0)),
+        "current_blue_pwm": clamp_pwm_value(env_state.get("current_blue_pwm", 0)),
         "saved_at": datetime.datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
     }
     try:
@@ -488,8 +498,8 @@ def read_last_control_state_from_snapshots():
             if not row or row[0].startswith("#") or row[0] == "id" or len(row) < 11:
                 continue
             target_ppfd = safe_float(row[8])
-            red_pwm = int(float(row[9] or 0))
-            blue_pwm = int(float(row[10] or 0))
+            red_pwm = clamp_pwm_value(row[9] or 0)
+            blue_pwm = clamp_pwm_value(row[10] or 0)
             if target_ppfd is None:
                 continue
             if target_ppfd > 0 or red_pwm > 0 or blue_pwm > 0:
@@ -513,8 +523,8 @@ def restore_control_state():
 
     if payload:
         env_state["target_ppfd"] = float(payload.get("target_ppfd", 0.0) or 0.0)
-        env_state["current_red_pwm"] = int(payload.get("current_red_pwm", 0) or 0)
-        env_state["current_blue_pwm"] = int(payload.get("current_blue_pwm", 0) or 0)
+        env_state["current_red_pwm"] = clamp_pwm_value(payload.get("current_red_pwm", 0))
+        env_state["current_blue_pwm"] = clamp_pwm_value(payload.get("current_blue_pwm", 0))
 
     if (
         env_state.get("target_ppfd", 0.0) == 0.0
@@ -524,8 +534,8 @@ def restore_control_state():
         fallback_state = read_last_control_state_from_snapshots()
         if fallback_state:
             env_state["target_ppfd"] = float(fallback_state["target_ppfd"])
-            env_state["current_red_pwm"] = int(fallback_state["current_red_pwm"])
-            env_state["current_blue_pwm"] = int(fallback_state["current_blue_pwm"])
+            env_state["current_red_pwm"] = clamp_pwm_value(fallback_state["current_red_pwm"])
+            env_state["current_blue_pwm"] = clamp_pwm_value(fallback_state["current_blue_pwm"])
             logger.info(
                 "Restored control state from sensor snapshots: target_ppfd=%.2f red_pwm=%d blue_pwm=%d",
                 env_state["target_ppfd"],
@@ -543,8 +553,8 @@ def restore_control_state():
 
 
 def apply_current_light_state():
-    red_pwm = int(env_state.get("current_red_pwm", 0) or 0)
-    blue_pwm = int(env_state.get("current_blue_pwm", 0) or 0)
+    red_pwm = clamp_pwm_value(env_state.get("current_red_pwm", 0))
+    blue_pwm = clamp_pwm_value(env_state.get("current_blue_pwm", 0))
     apply_device_command(
         "Red",
         "Light.Set",
@@ -756,8 +766,8 @@ def run_fallback_control():
     if safe_ppfd > 0:
         try:
             res = pwm_model.build_result(safe_ppfd, pwm_pkg["recommended_rb_ratio"], pwm_pkg)
-            red_pwm = res["red_pwm"]
-            blue_pwm = res["blue_pwm"]
+            red_pwm = clamp_pwm_value(res["red_pwm"])
+            blue_pwm = clamp_pwm_value(res["blue_pwm"])
         except Exception:
             logger.exception("Fallback PPFD-to-PWM conversion failed; forcing LEDs off.")
             red_pwm, blue_pwm = 0, 0
@@ -817,8 +827,8 @@ def on_message(client, userdata, msg):
         if target_ppfd > 0:
             try:
                 res = pwm_model.build_result(target_ppfd, pwm_pkg["recommended_rb_ratio"], pwm_pkg)
-                red_pwm = res["red_pwm"]
-                blue_pwm = res["blue_pwm"]
+                red_pwm = clamp_pwm_value(res["red_pwm"])
+                blue_pwm = clamp_pwm_value(res["blue_pwm"])
             except Exception:
                 logger.exception(
                     "Failed to convert target_ppfd=%.2f into LED PWM values; command ignored.",
