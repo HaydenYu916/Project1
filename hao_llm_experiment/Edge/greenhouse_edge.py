@@ -116,6 +116,7 @@ LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 SENSOR_SNAPSHOT_DIR = LOG_DIR / "sensor_snapshots"
 SENSOR_SNAPSHOT_DIR.mkdir(exist_ok=True)
+CONTROL_STATE_FILE = LOG_DIR / "edge_control_state.json"
 
 timestamp_str = datetime.datetime.now(TIMEZONE).strftime("%Y%m%d")
 log_filename = LOG_DIR / f"edge_node_{timestamp_str}.log"
@@ -462,6 +463,101 @@ def safe_csv_value(value):
     return value
 
 
+def persist_control_state():
+    payload = {
+        "target_ppfd": float(env_state.get("target_ppfd", 0.0) or 0.0),
+        "current_red_pwm": int(env_state.get("current_red_pwm", 0) or 0),
+        "current_blue_pwm": int(env_state.get("current_blue_pwm", 0) or 0),
+        "saved_at": datetime.datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    try:
+        CONTROL_STATE_FILE.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    except Exception:
+        logger.exception("Failed to persist control state to %s", CONTROL_STATE_FILE)
+
+
+def read_last_control_state_from_snapshots():
+    snapshot_csv = sensor_snapshot_csv_path_for_day()
+    if not snapshot_csv.exists():
+        return None
+
+    try:
+        with snapshot_csv.open(mode="r", newline="", encoding="utf-8") as f:
+            rows = list(csv.reader(f))
+        for row in reversed(rows):
+            if not row or row[0].startswith("#") or row[0] == "id" or len(row) < 11:
+                continue
+            target_ppfd = safe_float(row[8])
+            red_pwm = int(float(row[9] or 0))
+            blue_pwm = int(float(row[10] or 0))
+            if target_ppfd is None:
+                continue
+            if target_ppfd > 0 or red_pwm > 0 or blue_pwm > 0:
+                return {
+                    "target_ppfd": target_ppfd,
+                    "current_red_pwm": red_pwm,
+                    "current_blue_pwm": blue_pwm,
+                }
+    except Exception:
+        logger.exception("Failed to read fallback control state from %s", snapshot_csv)
+    return None
+
+
+def restore_control_state():
+    payload = None
+    if CONTROL_STATE_FILE.exists():
+        try:
+            payload = json.loads(CONTROL_STATE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            logger.exception("Failed to restore control state from %s", CONTROL_STATE_FILE)
+
+    if payload:
+        env_state["target_ppfd"] = float(payload.get("target_ppfd", 0.0) or 0.0)
+        env_state["current_red_pwm"] = int(payload.get("current_red_pwm", 0) or 0)
+        env_state["current_blue_pwm"] = int(payload.get("current_blue_pwm", 0) or 0)
+
+    if (
+        env_state.get("target_ppfd", 0.0) == 0.0
+        and env_state.get("current_red_pwm", 0) == 0
+        and env_state.get("current_blue_pwm", 0) == 0
+    ):
+        fallback_state = read_last_control_state_from_snapshots()
+        if fallback_state:
+            env_state["target_ppfd"] = float(fallback_state["target_ppfd"])
+            env_state["current_red_pwm"] = int(fallback_state["current_red_pwm"])
+            env_state["current_blue_pwm"] = int(fallback_state["current_blue_pwm"])
+            logger.info(
+                "Restored control state from sensor snapshots: target_ppfd=%.2f red_pwm=%d blue_pwm=%d",
+                env_state["target_ppfd"],
+                env_state["current_red_pwm"],
+                env_state["current_blue_pwm"],
+            )
+            return
+
+    logger.info(
+        "Restored control state from disk: target_ppfd=%.2f red_pwm=%d blue_pwm=%d",
+        env_state["target_ppfd"],
+        env_state["current_red_pwm"],
+        env_state["current_blue_pwm"],
+    )
+
+
+def apply_current_light_state():
+    red_pwm = int(env_state.get("current_red_pwm", 0) or 0)
+    blue_pwm = int(env_state.get("current_blue_pwm", 0) or 0)
+    apply_device_command(
+        "Red",
+        "Light.Set",
+        {"id": 0, "on": red_pwm > 0, "brightness": red_pwm},
+    )
+    apply_device_command(
+        "Blue",
+        "Light.Set",
+        {"id": 0, "on": blue_pwm > 0, "brightness": blue_pwm},
+    )
+    persist_control_state()
+
+
 def apply_device_command(device_key, command, params):
     if device_key not in DEVICES:
         logger.debug("Skipping %s command because the device is not configured.", device_key)
@@ -597,6 +693,8 @@ try:
 except Exception:
     logger.exception("Failed to load local SP/PN model packages.")
     raise
+
+restore_control_state()
 
 
 # --- 4. CORE FUNCTIONS ---
@@ -753,6 +851,7 @@ def on_message(client, userdata, msg):
             "Light.Set",
             {"id": 0, "on": blue_pwm > 0, "brightness": blue_pwm},
         )
+        persist_control_state()
         return
 
     if topic != POWER_TOPIC:
@@ -784,6 +883,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
         MQTT_PORT,
         reason_code,
     )
+    apply_current_light_state()
     client.subscribe(TOPIC_CMD)
     client.subscribe(POWER_TOPIC)
 
@@ -851,6 +951,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("Shutting down greenhouse edge node.")
     finally:
+        persist_control_state()
         flush_pending_sensor_snapshot()
         client.loop_stop()
         client.disconnect()
