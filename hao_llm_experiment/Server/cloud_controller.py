@@ -192,8 +192,7 @@ def on_message(client, userdata, msg):
         
         # Send command back to Edge
         cmd_payload = json.dumps({
-            "target_ppfd": decision["target_ppfd"],
-            "heater_pwm": int(decision["uHeat_frac"] * 100)
+            "target_ppfd": decision["target_ppfd"]
         })
         client.publish(TOPIC_CMD, cmd_payload, retain=True)
         logger.info(f"📤 Sent Setpoints: {cmd_payload}")

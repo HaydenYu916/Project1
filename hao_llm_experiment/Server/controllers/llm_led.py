@@ -20,8 +20,6 @@ class LLMLEDPolicy:
 class LLMControlLimits:
     target_ppfd_min: float = 0.0
     target_ppfd_max: float = 400.0  # Adjust based on your max hardware capability
-    uHeat_min: float = 0.0
-    uHeat_max: float = 1.0
 
 @dataclass
 class LLMLoggerConfig:
@@ -33,8 +31,8 @@ class LLMLoggerConfig:
 
 def _build_prompt(observations: Dict[str, Any], context: Dict[str, Any], forecast: Dict[str, Any], policy: Dict[str, Any]) -> str:
     blocks = [
-        "You are a greenhouse controls engineer. Choose a target PPFD and Heater fraction to maximize photosynthesis (Pn) while minimizing energy $/kWh cost.",
-        'Return STRICT JSON only with keys { "target_ppfd", "uHeat_frac", "rationale", "explanation" }. No extra text. No markdown.',
+        "You are a greenhouse controls engineer. Choose a target PPFD to maximize photosynthesis (Pn) while minimizing energy $/kWh cost.",
+        'Return STRICT JSON only with keys { "target_ppfd", "rationale", "explanation" }. No extra text. No markdown.',
         '\n[Observations]\n' + json.dumps(observations),
         '\n[Physics_Context]\n' + json.dumps(context),
         '\n[Outdoor Temperature]\n' + json.dumps(forecast),
@@ -52,7 +50,7 @@ def _build_prompt(observations: Dict[str, Any], context: Dict[str, Any], forecas
         "- Check 'local_time' and 'is_day'. If night, set target_ppfd to 0.0 for dark respiration.\n"
         "- Keep indoor temperature within [temp_min, temp_max].\n"
         "- Consider electricity_price_$per_kWh to weigh energy cost.\n"
-        "- OUTPUT STRICT JSON ONLY with fields: target_ppfd, uHeat_frac, rationale, explanation.\n"
+        "- OUTPUT STRICT JSON ONLY with fields: target_ppfd, rationale, explanation.\n"
         "- 'explanation' must be a short step-by-step list (3-6 bullets, <=20 tokens each)."
     ]
     return "\n".join(blocks)
@@ -84,10 +82,7 @@ def _validate_and_parse(raw: str, limits: LLMControlLimits) -> Dict[str, Any]:
     js = json.loads(raw[start:end+1])
 
     ppfd = float(js.get('target_ppfd', 0.0))
-    uHeat = float(js.get('uHeat_frac', 0.0))
-    
     js['target_ppfd'] = float(np.clip(ppfd, limits.target_ppfd_min, limits.target_ppfd_max))
-    js['uHeat_frac'] = float(np.clip(uHeat, limits.uHeat_min, limits.uHeat_max))
     js.setdefault('rationale', '')
     js['explanation'] = [str(x) for x in js.get('explanation', [])]
     return js
@@ -139,7 +134,6 @@ class LLMLEDController:
             # Safe Fallback
             fallback = {
                 "target_ppfd": 0.0,
-                "uHeat_frac": 0.0,
                 "rationale": "fallback",
                 "explanation": [f"{type(e).__name__}: {e}"],
             }
