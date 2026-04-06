@@ -30,10 +30,14 @@ class LLMLoggerConfig:
     timezone_name: Optional[str] = None
 
 def _build_prompt(observations: Dict[str, Any], context: Dict[str, Any], forecast: Dict[str, Any], policy: Dict[str, Any]) -> str:
+    llm_observations = dict(observations)
+    # Day/night control is derived from the edge-computed is_day flag, not from
+    # the clock string. Keep local_time out of the prompt to avoid semantic drift.
+    llm_observations.pop("local_time", None)
     blocks = [
         "You are a greenhouse controls engineer. Choose a target PPFD to maximize photosynthesis (Pn) while minimizing energy $/kWh cost.",
         'Return STRICT JSON only with keys { "target_ppfd", "rationale", "explanation" }. No extra text. No markdown.',
-        '\n[Observations]\n' + json.dumps(observations),
+        '\n[Observations]\n' + json.dumps(llm_observations),
         '\n[Physics_Context]\n' + json.dumps(context),
         '\n[Outdoor Temperature]\n' + json.dumps(forecast),
         '\n[Objectives_And_Penalties]\n' + json.dumps(policy),
@@ -47,7 +51,9 @@ def _build_prompt(observations: Dict[str, Any], context: Dict[str, Any], forecas
         "- Choose a realistic target_ppfd that respects actuator saturation and current plant conditions.\n",
         "\n[Reasoning_Instructions]\n"
         "- Respect actuator limits.\n"
-        "- Check 'local_time' and 'is_day'. If night, set target_ppfd to 0.0 for dark respiration.\n"
+        "- Treat 'is_day' as the only authoritative day/night signal.\n"
+        "- Ignore clock-time semantics for day/night classification.\n"
+        "- If is_day == 0, set target_ppfd to 0.0 for dark respiration.\n"
         "- Keep indoor temperature within [temp_min, temp_max].\n"
         "- Consider electricity_price_$per_kWh to weigh energy cost.\n"
         "- OUTPUT STRICT JSON ONLY with fields: target_ppfd, rationale, explanation.\n"
@@ -114,6 +120,28 @@ class LLMLEDController:
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
     def decide(self, obs: Dict, physics_ctx: Dict, forecast: Dict) -> Dict[str, Any]:
+        if int(obs.get("is_day", 1)) == 0:
+            decision = {
+                "target_ppfd": 0.0,
+                "rationale": "is_day=0, so lights stay off for the dark period.",
+                "explanation": [
+                    "Edge marked this interval as night.",
+                    "Night control is determined strictly by is_day.",
+                    "Set PPFD to zero for dark respiration.",
+                ],
+            }
+            self._write_log({
+                "model": DEFAULT_MODEL,
+                "observations": obs if self.logger.log_full_context else None,
+                "physics_context": physics_ctx if self.logger.log_full_context else None,
+                "forecast": forecast if self.logger.log_full_context else None,
+                "prompt": None,
+                "raw_response": None,
+                "decision": decision,
+                "decision_source": "is_day_guard",
+            })
+            return decision
+
         prompt = _build_prompt(obs, physics_ctx, forecast, self.policy.__dict__)
         raw = ""
         try:
