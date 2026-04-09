@@ -22,7 +22,7 @@ fixed_ppm = 400.0
 edge_timeout_seconds = 2000
 
 [llm]
-model_name = "gpt-oss:120b"
+model_name = "gpt-oss:20b"
 
 # TOML 用 # 注释。
 # 切换模型：把下面的 model_name 改成 "gpt-oss:20b" 或 "gpt-oss:120b"。
