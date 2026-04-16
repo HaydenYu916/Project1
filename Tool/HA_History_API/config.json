@@ -1,0 +1,22 @@
+{
+  "ha": {
+    "url": "https://loratestbed.cse.unsw.edu.au",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIyZWQ2OGVhN2RmYWU0Njg2YWZlYmVhZDliYTBmNjFkMCIsImlhdCI6MTc1MjU1OTY4MywiZXhwIjoyMDY3OTE5NjgzfQ.vLaq6pXuW4uR6Ay6gM9iEtu-SM1mfJrHyFWqlFv_sI0",
+    "entities": [
+      "sensor.growpod_riotee_l6vs_growpod_riotee_l6vs_ppfd_pred"
+    ]
+  },
+  "query_defaults": {
+    "timezone": "Australia/Sydney",
+    "start_time": "2026-04-1 09:00:00",
+    "end_time": "2026-04-12 23:00:00"
+  }
+}
+
+// sensor.chamberroom_c1_pump_current_power
+// sensor.chamberroom_c1_left_redblue_current_power
+// sensor.chamberRoom_C1_Right-redblue_current_power
+// sensor.growpod_riotee_7y0h_growpod_riotee_7y0h_temperature
+// sensor.growpod_riotee_l6vs_growpod_riotee_l6vs_temperature
+// sensor.growpod_riotee_l6vs_growpod_riotee_l6vs_ppfd_pred
+// sensor.growpod_riotee_l6vs_growpod_riotee_l6vs_pn_pred
