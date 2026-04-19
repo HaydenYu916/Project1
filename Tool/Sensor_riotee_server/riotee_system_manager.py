@@ -18,6 +18,7 @@ class RioteeSystem:
     def __init__(self):
         self.base_dir = Path(__file__).parent
         self.collector_script = self.base_dir / "riotee_data_collector.py"
+        self.service_name = "riotee-collector.service"
         self.logs_path = self.base_dir / "logs"  # 使用本地logs目录
         self.pid_file = self.base_dir / "riotee_collector.pid"
         self.log_file = self.base_dir / "riotee_system_manager.log"
@@ -79,9 +80,69 @@ class RioteeSystem:
         
         logging.info(f"Riotee系统管理器日志已初始化: {self.log_file}")
         return logger
+
+    def has_systemd_service(self):
+        """检查是否存在systemd服务。"""
+        try:
+            result = subprocess.run(
+                ["systemctl", "status", self.service_name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            return result.returncode in (0, 3)
+        except Exception:
+            return False
+
+    def systemd_is_active(self):
+        """检查systemd服务是否正在运行。"""
+        try:
+            result = subprocess.run(
+                ["systemctl", "is-active", self.service_name],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return result.stdout.strip() == "active"
+        except Exception:
+            return False
+
+    def get_systemd_main_pid(self):
+        """获取systemd服务的MainPID。"""
+        try:
+            result = subprocess.run(
+                ["systemctl", "show", self.service_name, "--property=MainPID", "--value"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            pid_text = result.stdout.strip()
+            pid = int(pid_text or "0")
+            return pid if pid > 0 else None
+        except Exception:
+            return None
+
+    def run_systemctl(self, action):
+        """执行systemctl命令。"""
+        result = subprocess.run(
+            ["systemctl", action, self.service_name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            error_output = (result.stderr or result.stdout).strip()
+            if error_output:
+                print(error_output)
+                logging.error(f"systemctl {action} 失败: {error_output}")
+            return False
+        return True
         
     def is_running(self):
         """检查数据采集进程是否运行"""
+        if self.has_systemd_service():
+            return self.systemd_is_active()
+
         if not self.pid_file.exists():
             logging.debug("PID文件不存在，采集器未运行")
             return False
@@ -107,6 +168,23 @@ class RioteeSystem:
             print(msg)
             logging.info("尝试启动采集器，但已在运行中")
             return True
+
+        if self.has_systemd_service():
+            msg = f"🚀 通过systemd启动Riotee数据采集器服务: {self.service_name}"
+            print(msg)
+            logging.info(msg)
+            if not self.run_systemctl("start"):
+                return False
+            time.sleep(2)
+            if self.systemd_is_active():
+                pid = self.get_systemd_main_pid()
+                success_msg = f"✅ Riotee数据采集器启动成功 (systemd PID: {pid})"
+                print(success_msg)
+                logging.info(success_msg)
+                return True
+            print("❌ Riotee数据采集器服务启动失败")
+            logging.error("systemd启动后服务未处于active状态")
+            return False
             
         msg = "🚀 启动Riotee数据采集器..."
         print(msg)
@@ -239,6 +317,25 @@ class RioteeSystem:
     def stop_collector(self):
         """停止数据采集器并清理所有文件"""
         stopped = False
+
+        if self.has_systemd_service():
+            if not self.systemd_is_active():
+                msg = "⏹️  Riotee数据采集器服务未运行"
+                print(msg)
+                logging.info(msg)
+                stopped = True
+            else:
+                pid = self.get_systemd_main_pid()
+                msg = f"⏹️  通过systemd停止Riotee数据采集器 (PID: {pid})..."
+                print(msg)
+                logging.info(msg)
+                if self.run_systemctl("stop"):
+                    success_msg = "✅ Riotee数据采集器服务已停止"
+                    print(success_msg)
+                    logging.info(success_msg)
+                    stopped = True
+            self.pid_file.unlink(missing_ok=True)
+            return stopped
         
         if not self.is_running():
             msg = "⏹️  Riotee数据采集器未运行"
@@ -294,7 +391,13 @@ class RioteeSystem:
         print("=" * 30)
         
         # 检查采集器状态
-        if self.is_running():
+        if self.has_systemd_service():
+            if self.systemd_is_active():
+                pid = self.get_systemd_main_pid()
+                print(f"🟢 数据采集器服务: 运行中 (systemd PID: {pid})")
+            else:
+                print("🔴 数据采集器服务: 未运行")
+        elif self.is_running():
             with open(self.pid_file, 'r') as f:
                 pid = f.read().strip()
             print(f"🟢 数据采集器: 运行中 (PID: {pid})")
@@ -319,14 +422,14 @@ class RioteeSystem:
                 # 显示最新数据
                 try:
                     import csv
-                    with open(latest_csv, 'r') as f:
+                    with open(latest_csv, 'r', encoding='utf-8', errors='replace') as f:
+                        sanitized_lines = (line.replace('\x00', '') for line in f)
                         # 跳过注释行
-                        first_line = f.readline()
+                        first_line = next(sanitized_lines, '')
                         if first_line.startswith('#'):
-                            reader = csv.DictReader(f)
+                            reader = csv.DictReader(sanitized_lines)
                         else:
-                            f.seek(0)
-                            reader = csv.DictReader(f)
+                            reader = csv.DictReader([first_line, *sanitized_lines])
                         
                         rows = list(reader)
                         if rows:

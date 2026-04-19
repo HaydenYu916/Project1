@@ -119,13 +119,14 @@ def _read_csv_data(csv_path: str, limit: Optional[int] = None) -> List[Dict[str,
     
     rows = []
     try:
-        with open(csv_path, 'r', newline='', encoding='utf-8') as f:
+        with open(csv_path, 'r', newline='', encoding='utf-8', errors='replace') as f:
+            sanitized_lines = (line.replace('\x00', '') for line in f)
             # 跳过注释行
-            first_line = f.readline()
+            first_line = next(sanitized_lines, '')
             if not first_line.startswith('#'):
-                f.seek(0)
-            
-            reader = csv.DictReader(f)
+                reader = csv.DictReader([first_line, *sanitized_lines])
+            else:
+                reader = csv.DictReader(sanitized_lines)
             
             # 如果需要限制行数，并且文件较大，使用更高效的方法
             if limit and limit <= 100:

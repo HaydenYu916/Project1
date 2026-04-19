@@ -98,7 +98,10 @@ TOPIC_CMD = CLOUD_CONFIG["topic_cmd"]
 
 # Watchdog config
 EDGE_TIMEOUT_SECONDS = CLOUD_CONFIG["edge_timeout_seconds"]
+cloud_start_time = time.time()
 last_edge_contact = time.time()
+first_edge_contact = None
+edge_message_count = 0
 edge_is_offline = False
 
 # --- 3. LLM SETUP ---
@@ -113,23 +116,51 @@ controller = LLMLEDController(policy=policy, model_name=MODEL_NAME, logger=llm_l
 
 # --- 4. CORE FUNCTIONS ---
 
+
+def _format_wall_time(epoch_seconds):
+    if epoch_seconds is None:
+        return "never"
+    return datetime.datetime.fromtimestamp(epoch_seconds, tz=TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _format_duration(seconds):
+    total_seconds = max(0, int(seconds))
+    minutes, sec = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{sec:02d}s"
+    return f"{minutes}m{sec:02d}s"
+
 def on_connect(client, userdata, flags, reason_code, properties):
-    logger.info("✅ Cloud LLM Connected to MQTT! Subscribing to Edge State...")
+    logger.info(
+        "✅ Cloud LLM Connected to MQTT! Subscribing to Edge State topic=%s",
+        TOPIC_STATE,
+    )
     client.subscribe(TOPIC_STATE)
 
 def on_message(client, userdata, msg):
-    global last_edge_contact, edge_is_offline
+    global last_edge_contact, first_edge_contact, edge_message_count, edge_is_offline
     
     try:
         # Reset the watchdog timer
+        previous_contact = last_edge_contact
         last_edge_contact = time.time()
+        if first_edge_contact is None:
+            first_edge_contact = last_edge_contact
+        edge_message_count += 1
         if edge_is_offline:
-            logger.info("📡 Edge Node connection restored! Resuming LLM control.")
+            logger.info(
+                "📡 Edge Node connection restored after %s without messages. total_messages=%s",
+                _format_duration(last_edge_contact - previous_contact),
+                edge_message_count,
+            )
             edge_is_offline = False
 
         state = json.loads(msg.payload.decode())
         logger.info(
-            "📩 Received core state: local_time=%s tz=%s ppfd_now=%.1f pn_now=%.2f tleaf_now=%.2f last_target_ppfd=%.1f red_pwm=%s blue_pwm=%s saturated=%s valid=%s",
+            "📩 Received Edge message #%s topic=%s: local_time=%s tz=%s ppfd_now=%.1f pn_now=%.2f tleaf_now=%.2f last_target_ppfd=%.1f red_pwm=%s blue_pwm=%s saturated=%s valid=%s",
+            edge_message_count,
+            msg.topic,
             state.get("local_time", "--:--"),
             state.get("timezone", "unknown"),
             state.get("ppfd_now", 0.0),
@@ -206,7 +237,23 @@ def edge_watchdog():
     while True:
         time.sleep(60)
         if time.time() - last_edge_contact > EDGE_TIMEOUT_SECONDS and not edge_is_offline:
-            logger.warning("⚠️ CRITICAL: No data received from Edge Node for over 30 minutes. It may have reverted to fallback mode.")
+            elapsed = time.time() - last_edge_contact
+            if edge_message_count == 0:
+                logger.warning(
+                    "⚠️ CRITICAL: No Edge messages received since cloud startup. topic=%s startup_at=%s elapsed=%s. Edge may be offline or publishing elsewhere.",
+                    TOPIC_STATE,
+                    _format_wall_time(cloud_start_time),
+                    _format_duration(elapsed),
+                )
+            else:
+                logger.warning(
+                    "⚠️ CRITICAL: Edge message stream stalled. topic=%s last_message_at=%s first_message_at=%s elapsed=%s total_messages=%s. Edge may have reverted to fallback mode.",
+                    TOPIC_STATE,
+                    _format_wall_time(last_edge_contact),
+                    _format_wall_time(first_edge_contact),
+                    _format_duration(elapsed),
+                    edge_message_count,
+                )
             edge_is_offline = True
 
 # --- MAIN ---

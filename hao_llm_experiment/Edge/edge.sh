@@ -7,12 +7,32 @@ LOG_FILE="$ROOT_DIR/nohup_edge.log"
 PYTHON_BIN="/home/hao/miniforge3/envs/project1/bin/python"
 SCRIPT_PATH="$ROOT_DIR/greenhouse_edge.py"
 CMD_PATTERN="$SCRIPT_PATH"
+SERVICE_NAME="greenhouse-edge.service"
+
+has_systemd_service() {
+  systemctl status "$SERVICE_NAME" >/dev/null 2>&1
+}
+
+systemd_is_active() {
+  [[ "$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)" == "active" ]]
+}
+
+show_systemd_hint() {
+  echo "Detected systemd service: $SERVICE_NAME"
+  echo "This script will use systemd to avoid duplicate Edge processes."
+}
 
 is_running() {
   pgrep -af "$CMD_PATTERN" >/dev/null 2>&1
 }
 
 show_status() {
+  if has_systemd_service; then
+    show_systemd_hint
+    systemctl status "$SERVICE_NAME" --no-pager -l
+    return 0
+  fi
+
   if is_running; then
     echo "Edge is running:"
     pgrep -af "$CMD_PATTERN"
@@ -26,6 +46,19 @@ show_status() {
 }
 
 start_edge() {
+  if has_systemd_service; then
+    show_systemd_hint
+    if systemd_is_active; then
+      echo "Edge service is already running."
+      systemctl status "$SERVICE_NAME" --no-pager -l
+      return 0
+    fi
+    systemctl start "$SERVICE_NAME"
+    echo "Edge service started via systemd."
+    systemctl status "$SERVICE_NAME" --no-pager -l
+    return 0
+  fi
+
   if is_running; then
     echo "Edge is already running:"
     pgrep -af "$CMD_PATTERN"
@@ -52,6 +85,18 @@ start_edge() {
 }
 
 stop_edge() {
+  if has_systemd_service; then
+    show_systemd_hint
+    if ! systemd_is_active; then
+      echo "Edge service is not running."
+      return 0
+    fi
+    systemctl stop "$SERVICE_NAME"
+    rm -f "$PID_FILE"
+    echo "Edge service stopped via systemd."
+    return 0
+  fi
+
   if is_running; then
     pkill -f "$CMD_PATTERN"
     sleep 1
@@ -69,6 +114,12 @@ stop_edge() {
 }
 
 show_logs() {
+  if has_systemd_service; then
+    show_systemd_hint
+    journalctl -u "$SERVICE_NAME" -f
+    return 0
+  fi
+
   if [[ -f "$LOG_FILE" ]]; then
     tail -f "$LOG_FILE"
   else
@@ -84,6 +135,8 @@ Usage:
   ./edge.sh status
   ./edge.sh restart
   ./edge.sh logs
+
+If systemd service greenhouse-edge.service is installed, this script proxies to systemctl/journalctl.
 EOF
 }
 

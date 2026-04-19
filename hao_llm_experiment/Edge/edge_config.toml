@@ -26,3 +26,21 @@ humidity = "riotee/L_6vSQ/humidity"
 ppfd_pred = "riotee/L_6vSQ/ppfd_pred"
 pn_pred = "riotee/L_6vSQ/pn_pred"
 power = "homeassistant/sensor/chamberRoom_C1_right_light_current_power/state"
+
+
+#sudo systemctl status greenhouse-edge.service
+#sudo systemctl restart greenhouse-edge.service
+#journalctl -u greenhouse-edge.service -f
+
+#sudo systemctl start greenhouse-edge.service
+#sudo systemctl stop greenhouse-edge.service
+#sudo systemctl restart greenhouse-edge.service
+#sudo systemctl status greenhouse-edge.service
+#journalctl -u greenhouse-edge.service -f
+
+
+#sudo systemctl start riotee-collector.service
+#sudo systemctl stop riotee-collector.service
+#sudo systemctl restart riotee-collector.service
+#sudo systemctl status riotee-collector.service
+#journalctl -u riotee-collector.service -f
