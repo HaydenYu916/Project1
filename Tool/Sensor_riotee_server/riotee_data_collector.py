@@ -58,6 +58,7 @@ RAW_CO2_MISSING_PAYLOAD = "unknown"
 
 # Globals
 mqtt_client = None
+mqtt_connected = False
 csv_file_all = csv_writer_all = csv_file_summary = csv_writer_summary = None
 record_id = 0
 session_start_time = None
@@ -191,25 +192,86 @@ def publish_derived_metrics(dev, ppfd_pred, pn_pred):
         publish_mqtt(f"riotee/{dev}/pn_pred", f"{pn_pred:.2f}")
 
 # ============ MQTT ============
+def on_mqtt_connect(client, userdata, flags, reason_code, properties):
+    global mqtt_connected
+
+    mqtt_connected = True
+    logging.info(
+        "MQTT connected to %s:%s with reason_code=%s",
+        CONFIG["mqtt_broker"],
+        CONFIG["mqtt_port"],
+        reason_code,
+    )
+
+    # Re-publish discovery after reconnect in case the broker lost retained state.
+    discovered_devices.clear()
+
+
+def on_mqtt_disconnect(client, userdata, flags, reason_code, properties):
+    global mqtt_connected
+
+    mqtt_connected = False
+    if reason_code == 0:
+        logging.info("MQTT disconnected cleanly")
+    else:
+        logging.warning(
+            "MQTT disconnected unexpectedly with reason_code=%s; automatic reconnect will continue",
+            reason_code,
+        )
+
+
 def setup_mqtt():
     try:
-        client = mqtt.Client(client_id=f"riotee_{int(time.time())}", 
-                            callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+        client = mqtt.Client(
+            client_id=f"riotee_{int(time.time())}",
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+        )
         client.username_pw_set(CONFIG["mqtt_username"], CONFIG["mqtt_password"])
-        client.connect(CONFIG["mqtt_broker"], CONFIG["mqtt_port"], 60)
+        client.reconnect_delay_set(min_delay=1, max_delay=60)
+        client.on_connect = on_mqtt_connect
+        client.on_disconnect = on_mqtt_disconnect
+        client.connect_async(CONFIG["mqtt_broker"], CONFIG["mqtt_port"], 60)
         client.loop_start()
-        logging.info("MQTT connected")
+        logging.info(
+            "MQTT loop started; connecting to %s:%s",
+            CONFIG["mqtt_broker"],
+            CONFIG["mqtt_port"],
+        )
         return client
     except Exception as e:
         logging.warning(f"MQTT failed: {e}")
         return None
 
+
+def ensure_mqtt_connection():
+    global mqtt_client
+
+    if mqtt_client is None:
+        mqtt_client = setup_mqtt()
+        return
+
+    if mqtt_connected:
+        return
+
+    try:
+        mqtt_client.reconnect()
+        logging.info("Triggered MQTT reconnect attempt")
+    except Exception as exc:
+        logging.debug(f"MQTT reconnect attempt deferred: {exc}")
+
+
 def publish_mqtt(topic, value):
-    if mqtt_client:
+    if mqtt_client and mqtt_connected:
         try:
-            mqtt_client.publish(topic, str(value), qos=0)
-            stats["mqtt_success"] += 1
-        except: pass
+            result = mqtt_client.publish(topic, str(value), qos=0)
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                stats["mqtt_success"] += 1
+            else:
+                logging.debug(f"MQTT publish skipped rc={result.rc} topic={topic}")
+        except Exception as exc:
+            logging.debug(f"MQTT publish failed for {topic}: {exc}")
+    else:
+        logging.debug(f"MQTT offline; skipping publish for {topic}")
 
 
 def get_device_topic_id(device_id):
@@ -624,6 +686,7 @@ def main():
     try:
         while True:
             try:
+                ensure_mqtt_connection()
                 devices = set(gateway.get_devices())
                 if not devices:
                     time.sleep(CONFIG["data_interval"])

@@ -1,0 +1,17 @@
+[Unit]
+Description=Riotee Data Collector Service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=hao
+WorkingDirectory=/home/hao/Desktop/Project1/Tool/Sensor_riotee_server
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/hao/miniforge3/envs/project1/bin/python3 /home/hao/Desktop/Project1/Tool/Sensor_riotee_server/riotee_data_collector.py
+Restart=always
+RestartSec=10
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=Greenhouse Edge Service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=hao
+WorkingDirectory=/home/hao/Desktop/Project1/hao_llm_experiment/Edge
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/hao/miniforge3/envs/project1/bin/python /home/hao/Desktop/Project1/hao_llm_experiment/Edge/greenhouse_edge.py
+Restart=always
+RestartSec=10
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
