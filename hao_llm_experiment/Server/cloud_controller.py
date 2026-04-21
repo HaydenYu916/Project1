@@ -4,6 +4,7 @@ import time
 import datetime
 import logging
 import threading
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -53,12 +54,12 @@ def load_cloud_config():
 
 
 CLOUD_CONFIG = load_cloud_config()
-LOG_DIR = CLOUD_CONFIG["log_dir"]
+LOG_DIR_PATH = Path(CLOUD_CONFIG["log_dir"])
+if not LOG_DIR_PATH.is_absolute():
+    LOG_DIR_PATH = BASE_DIR / LOG_DIR_PATH
+LOG_DIR = str(LOG_DIR_PATH)
 TIMEZONE = ZoneInfo(CLOUD_CONFIG["timezone"])
 os.makedirs(LOG_DIR, exist_ok=True)
-
-timestamp_str = datetime.datetime.now(TIMEZONE).strftime("%Y%m%d")
-log_filename = os.path.join(LOG_DIR, f'cloud_agronomist_{timestamp_str}.log')
 
 class TimezoneFormatter(logging.Formatter):
     def __init__(self, fmt=None, datefmt=None, tz=None):
@@ -72,11 +73,64 @@ class TimezoneFormatter(logging.Formatter):
         return dt.strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
 
 
+class DailyTimezoneRotatingFileHandler(TimedRotatingFileHandler):
+    def __init__(self, log_dir, filename_prefix, tz, encoding="utf-8"):
+        self.log_dir = Path(log_dir)
+        self.filename_prefix = filename_prefix
+        self.tz = tz
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.current_log_date = self._date_str(time.time())
+        initial_filename = self._build_filename(self.current_log_date)
+        super().__init__(
+            filename=initial_filename,
+            when="midnight",
+            interval=1,
+            backupCount=0,
+            encoding=encoding,
+            delay=True,
+        )
+        self.rolloverAt = self.computeRollover(time.time())
+
+    def _date_str(self, epoch_seconds):
+        dt = datetime.datetime.fromtimestamp(epoch_seconds, tz=self.tz)
+        return dt.strftime("%Y%m%d")
+
+    def _build_filename(self, date_str):
+        return str(self.log_dir / f"{self.filename_prefix}_{date_str}.log")
+
+    def computeRollover(self, current_time):
+        current_dt = datetime.datetime.fromtimestamp(current_time, tz=self.tz)
+        next_date = current_dt.date() + datetime.timedelta(days=1)
+        next_midnight = datetime.datetime.combine(next_date, datetime.time.min, tzinfo=self.tz)
+        return int(next_midnight.timestamp())
+
+    def shouldRollover(self, record):
+        record_date = self._date_str(record.created)
+        return int(record.created >= self.rolloverAt or record_date != self.current_log_date)
+
+    def doRollover(self):
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+
+        current_time = time.time()
+        self.current_log_date = self._date_str(current_time)
+        self.baseFilename = os.path.abspath(self._build_filename(self.current_log_date))
+        self.rolloverAt = self.computeRollover(current_time)
+
+        if not self.delay:
+            self.stream = self._open()
+
+
 formatter = TimezoneFormatter(
     fmt='%(asctime)s - %(levelname)s - %(message)s',
     tz=TIMEZONE,
 )
-file_handler = logging.FileHandler(log_filename)
+file_handler = DailyTimezoneRotatingFileHandler(
+    log_dir=LOG_DIR,
+    filename_prefix="cloud_agronomist",
+    tz=TIMEZONE,
+)
 file_handler.setFormatter(formatter)
 stream_handler = logging.StreamHandler()
 stream_handler.setFormatter(formatter)
@@ -98,7 +152,10 @@ TOPIC_CMD = CLOUD_CONFIG["topic_cmd"]
 
 # Watchdog config
 EDGE_TIMEOUT_SECONDS = CLOUD_CONFIG["edge_timeout_seconds"]
+cloud_start_time = time.time()
 last_edge_contact = time.time()
+first_edge_contact = None
+edge_message_count = 0
 edge_is_offline = False
 
 # --- 3. LLM SETUP ---
@@ -113,23 +170,51 @@ controller = LLMLEDController(policy=policy, model_name=MODEL_NAME, logger=llm_l
 
 # --- 4. CORE FUNCTIONS ---
 
+
+def _format_wall_time(epoch_seconds):
+    if epoch_seconds is None:
+        return "never"
+    return datetime.datetime.fromtimestamp(epoch_seconds, tz=TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _format_duration(seconds):
+    total_seconds = max(0, int(seconds))
+    minutes, sec = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{sec:02d}s"
+    return f"{minutes}m{sec:02d}s"
+
 def on_connect(client, userdata, flags, reason_code, properties):
-    logger.info("✅ Cloud LLM Connected to MQTT! Subscribing to Edge State...")
+    logger.info(
+        "✅ Cloud LLM Connected to MQTT! Subscribing to Edge State topic=%s",
+        TOPIC_STATE,
+    )
     client.subscribe(TOPIC_STATE)
 
 def on_message(client, userdata, msg):
-    global last_edge_contact, edge_is_offline
+    global last_edge_contact, first_edge_contact, edge_message_count, edge_is_offline
     
     try:
         # Reset the watchdog timer
+        previous_contact = last_edge_contact
         last_edge_contact = time.time()
+        if first_edge_contact is None:
+            first_edge_contact = last_edge_contact
+        edge_message_count += 1
         if edge_is_offline:
-            logger.info("📡 Edge Node connection restored! Resuming LLM control.")
+            logger.info(
+                "📡 Edge Node connection restored after %s without messages. total_messages=%s",
+                _format_duration(last_edge_contact - previous_contact),
+                edge_message_count,
+            )
             edge_is_offline = False
 
         state = json.loads(msg.payload.decode())
         logger.info(
-            "📩 Received core state: local_time=%s tz=%s ppfd_now=%.1f pn_now=%.2f tleaf_now=%.2f last_target_ppfd=%.1f red_pwm=%s blue_pwm=%s saturated=%s valid=%s",
+            "📩 Received Edge message #%s topic=%s: local_time=%s tz=%s ppfd_now=%.1f pn_now=%.2f tleaf_now=%.2f last_target_ppfd=%.1f red_pwm=%s blue_pwm=%s saturated=%s valid=%s",
+            edge_message_count,
+            msg.topic,
             state.get("local_time", "--:--"),
             state.get("timezone", "unknown"),
             state.get("ppfd_now", 0.0),
@@ -206,7 +291,23 @@ def edge_watchdog():
     while True:
         time.sleep(60)
         if time.time() - last_edge_contact > EDGE_TIMEOUT_SECONDS and not edge_is_offline:
-            logger.warning("⚠️ CRITICAL: No data received from Edge Node for over 30 minutes. It may have reverted to fallback mode.")
+            elapsed = time.time() - last_edge_contact
+            if edge_message_count == 0:
+                logger.warning(
+                    "⚠️ CRITICAL: No Edge messages received since cloud startup. topic=%s startup_at=%s elapsed=%s. Edge may be offline or publishing elsewhere.",
+                    TOPIC_STATE,
+                    _format_wall_time(cloud_start_time),
+                    _format_duration(elapsed),
+                )
+            else:
+                logger.warning(
+                    "⚠️ CRITICAL: Edge message stream stalled. topic=%s last_message_at=%s first_message_at=%s elapsed=%s total_messages=%s. Edge may have reverted to fallback mode.",
+                    TOPIC_STATE,
+                    _format_wall_time(last_edge_contact),
+                    _format_wall_time(first_edge_contact),
+                    _format_duration(elapsed),
+                    edge_message_count,
+                )
             edge_is_offline = True
 
 # --- MAIN ---
