@@ -1,0 +1,46 @@
+{
+  "model_name": "PLSR",
+  "model_version": "tuned",
+  "feature_columns": [
+    "sp_415_mean",
+    "sp_445_mean",
+    "sp_480_mean",
+    "sp_515_mean",
+    "sp_555_mean",
+    "sp_590_mean",
+    "sp_630_mean",
+    "sp_680_mean"
+  ],
+  "target_col": "PPFD_spec_mean",
+  "input_csv": "/Users/z5540822/Downloads/PWM-ppfd/Hao_SPtoPPFD_training/data/Train_data-h4_pC.csv",
+  "n_rows": 82,
+  "test_metrics": {
+    "RMSE": 2.6665123660524093,
+    "MAE": 2.0366892616316865,
+    "R2": 0.9986615115193959,
+    "Bias": -0.04083322291349615,
+    "NRMSE_mean": 0.021329706112545404,
+    "NRMSE_range": 0.012235679115290408
+  },
+  "used_tuning": true,
+  "available_models": [
+    "DummyMean",
+    "LinearRegression",
+    "Ridge",
+    "Lasso",
+    "ElasticNet",
+    "Huber",
+    "PLSR",
+    "PCR_Ridge",
+    "KNN",
+    "SVR_RBF",
+    "KernelRidge_RBF",
+    "DecisionTree",
+    "RandomForest",
+    "ExtraTrees",
+    "GradientBoosting",
+    "HistGBR",
+    "GPR",
+    "MLP"
+  ]
+}

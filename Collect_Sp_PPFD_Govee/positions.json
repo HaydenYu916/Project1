@@ -1,0 +1,24 @@
+{
+  "frame": "board_center",
+  "unit": "cm",
+  "board_size_cm": [31.0, 26.0],
+  "grid_corners_cm": {
+    "BL": [-14.25, -10.5],
+    "BR": [14.25, -10.5],
+    "TL": [-14.25, 10.5],
+    "TR": [14.25, 10.5]
+  },
+  "cell_size_cm": [9.5, 7.0],
+  "positions": [
+    {"id": 1, "name": "BL", "x_cm": -9.5, "y_cm": -7},
+    {"id": 2, "name": "B",  "x_cm":  0.0, "y_cm": -7},
+    {"id": 3, "name": "BR", "x_cm":  9.5, "y_cm": -7},
+    {"id": 4, "name": "L",  "x_cm": -9.5, "y_cm":  0},
+    {"id": 5, "name": "C",  "x_cm":  0.0, "y_cm":  0},
+    {"id": 6, "name": "R",  "x_cm":  9.5, "y_cm":  0},
+    {"id": 7, "name": "TL", "x_cm": -9.5, "y_cm":  7},
+    {"id": 8, "name": "T",  "x_cm":  0.0, "y_cm":  7},
+    {"id": 9, "name": "TR", "x_cm":  9.5, "y_cm":  7}
+  ],
+  "previous_runs_status": "kept on disk but excluded from new training set (different sensor placement)"
+}
