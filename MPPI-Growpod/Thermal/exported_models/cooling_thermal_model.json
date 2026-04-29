@@ -1,0 +1,13 @@
+{
+  "model_type": "Pure Thermodynamic Model - Cooling Phase",
+  "formula": "ΔT(t) = K1(a1) × exp(-t/τ1) + K2(a1) × exp(-t/τ2)",
+  "solar_correction": "K1(a1) = K1_base × (1 + α_solar × (a1_val - 1.4)), K2(a1) = K2_base × (1 + α_solar × (a1_val - 1.4))",
+  "parameters": {
+    "K1_base": 3.3548987208209438,
+    "tau1": 15.743670217895502,
+    "K2_base": 5.318573214702604,
+    "tau2": 168.80851716294282,
+    "alpha_solar": 1.5105878683604992
+  },
+  "a1_ref": 1.4
+}

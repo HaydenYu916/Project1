@@ -56,7 +56,7 @@ class SensorReading:
             device_data["timestamp"] = pd.to_datetime(device_data["timestamp"])
             latest_time = device_data["timestamp"].max()
             window_start = latest_time - pd.Timedelta(minutes=10)
-            recent = device_data[device_data["timestamp"] >= window_start]
+            recent = device_data[device_data["timestamp"] >= window_start].copy()
             if recent.empty:
                 print(f"警告: 过去10分钟内没有数据")
                 return None, None, None, None
@@ -290,8 +290,8 @@ class LEDPlant:
         power_key = self._get_power_model_key(self.r_b_ratio)
         power = self.power_model.predict(total_pwm=total_pwm_for_power, key=power_key)
 
-        # 🔥 计算MPPI控制量变化: u0 - u1
-        control_change = float(solar_vol) - self.previous_control
+        # 🔥 计算MPPI控制量变化: 当前控制 - 上一次实际施加的控制
+        control_change = float(solar_vol) - self.current_control
         
         # 🔥 新版热力学模型步进 - 基于控制量变化判断升温/降温
         new_ambient_temp = self.thermal_model.step(
@@ -451,9 +451,10 @@ class LEDPlant:
         self,
         solar_vol_control_sequence,
         initial_temp,
-        dt=0.1,
+        dt=900.0,
         co2_sequence=None,
         r_b_sequence=None,
+        prev_control=None,
     ):
         """🔥 新版热力学模型预测整条控制序列 - 基于MPPI控制量变化"""
         # 创建独立的热力学模型实例用于预测
@@ -467,9 +468,12 @@ class LEDPlant:
         photo_predictions = []
         r_pwm_predictions = []
         b_pwm_predictions = []
-        
-        # 🔥 MPPI控制状态跟踪
-        prev_control = 0.0  # 初始控制量
+
+        # 🔥 MPPI控制状态跟踪：默认沿用 plant 当前实际施加的控制
+        if prev_control is None:
+            prev_control = float(self.current_control)
+        else:
+            prev_control = float(prev_control)
 
         for i, solar_vol_control in enumerate(solar_vol_control_sequence):
             current_co2 = co2_sequence[i] if co2_sequence is not None else self.co2_ppm
@@ -672,7 +676,7 @@ class LEDMPPIController:
         #计算单个PWM序列的代价 - 通过参考跟踪最大化光合作用
         try:
             (_u_in, temp_pred, power_pred, photo_pred, _r_pwm, _b_pwm) = self.plant.predict(
-                u_seq, current_temp, dt=self.dt
+                u_seq, current_temp, dt=self.dt, prev_control=self.u_prev
             )
 
             cost = 0.0
@@ -745,12 +749,19 @@ class LEDMPPIController:
         optimal_seq = np.clip(optimal_seq, self.u_min, self.u_max)
         optimal_u = float(optimal_seq[0])
 
-        # 🔥 温度安全检查
+        # 🔥 温度安全检查 - 用 plant 真实的上一控制做预测，必要时迭代缩放
         try:
-            _sv, t_check, _pw, _pn, _r, _b = self.plant.predict([optimal_u], current_temp, dt=self.dt)
-            if t_check[0] > self.temp_max:
-                optimal_u = max(self.u_min, optimal_u * 0.7)
-                optimal_seq[0] = optimal_u
+            for _ in range(5):
+                _sv, t_check, _pw, _pn, _r, _b = self.plant.predict(
+                    [optimal_u], current_temp, dt=self.dt, prev_control=self.u_prev
+                )
+                if t_check[0] <= self.temp_max:
+                    break
+                scaled = max(self.u_min, optimal_u * 0.7)
+                if scaled >= optimal_u:
+                    break
+                optimal_u = scaled
+            optimal_seq[0] = optimal_u
         except Exception:
             pass
 
