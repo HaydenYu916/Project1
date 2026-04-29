@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="$(readlink -f "${BASH_SOURCE[0]}")"
+ROOT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
 PID_FILE="$ROOT_DIR/edge.pid"
 LOG_FILE="$ROOT_DIR/nohup_edge.log"
 PYTHON_BIN="/home/hao/miniforge3/envs/project1/bin/python"
 SCRIPT_PATH="$ROOT_DIR/greenhouse_edge.py"
-CMD_PATTERN="$SCRIPT_PATH"
+CMD_PATTERN="$PYTHON_BIN $SCRIPT_PATH"
 SERVICE_NAME="greenhouse-edge.service"
 
+SUDO=""
+if [[ $EUID -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+  SUDO="sudo"
+fi
+
 has_systemd_service() {
-  systemctl status "$SERVICE_NAME" >/dev/null 2>&1
+  systemctl cat "$SERVICE_NAME" >/dev/null 2>&1
 }
 
 systemd_is_active() {
@@ -29,7 +35,7 @@ is_running() {
 show_status() {
   if has_systemd_service; then
     show_systemd_hint
-    systemctl status "$SERVICE_NAME" --no-pager -l
+    systemctl status "$SERVICE_NAME" --no-pager -l || true
     return 0
   fi
 
@@ -50,12 +56,12 @@ start_edge() {
     show_systemd_hint
     if systemd_is_active; then
       echo "Edge service is already running."
-      systemctl status "$SERVICE_NAME" --no-pager -l
+      systemctl status "$SERVICE_NAME" --no-pager -l || true
       return 0
     fi
-    systemctl start "$SERVICE_NAME"
+    $SUDO systemctl start "$SERVICE_NAME"
     echo "Edge service started via systemd."
-    systemctl status "$SERVICE_NAME" --no-pager -l
+    systemctl status "$SERVICE_NAME" --no-pager -l || true
     return 0
   fi
 
@@ -68,11 +74,14 @@ start_edge() {
   cd "$ROOT_DIR"
   touch "$LOG_FILE"
   setsid "$PYTHON_BIN" "$SCRIPT_PATH" >>"$LOG_FILE" 2>&1 < /dev/null &
-  local edge_pid=$!
+  disown || true
 
   sleep 2
 
-  if is_running; then
+  local edge_pid
+  edge_pid="$(pgrep -f "$CMD_PATTERN" | head -n1 || true)"
+
+  if [[ -n "$edge_pid" ]]; then
     echo "$edge_pid" >"$PID_FILE"
     echo "Edge started."
     echo "pid_file: $PID_FILE"
@@ -91,14 +100,19 @@ stop_edge() {
       echo "Edge service is not running."
       return 0
     fi
-    systemctl stop "$SERVICE_NAME"
+    $SUDO systemctl stop "$SERVICE_NAME"
     rm -f "$PID_FILE"
     echo "Edge service stopped via systemd."
     return 0
   fi
 
   if is_running; then
-    pkill -f "$CMD_PATTERN"
+    pkill -f "$CMD_PATTERN" || true
+    sleep 1
+  fi
+
+  if is_running; then
+    pkill -9 -f "$CMD_PATTERN" || true
     sleep 1
   fi
 
@@ -153,7 +167,7 @@ case "$ACTION" in
     show_status
     ;;
   restart)
-    stop_edge
+    stop_edge || true
     start_edge
     ;;
   logs)
