@@ -142,7 +142,7 @@ else:
 
 ### 运行演示
 ```bash
-cd LED_MPPI_Controller
+cd MPPI-Growpod
 python examples/unified_ppfd_demo.py
 ```
 

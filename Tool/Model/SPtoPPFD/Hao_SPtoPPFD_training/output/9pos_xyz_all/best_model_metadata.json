@@ -1,0 +1,49 @@
+{
+  "model_name": "GPR",
+  "model_version": "tuned",
+  "feature_columns": [
+    "sp_415_mean",
+    "sp_445_mean",
+    "sp_480_mean",
+    "sp_515_mean",
+    "sp_555_mean",
+    "sp_590_mean",
+    "sp_630_mean",
+    "sp_680_mean",
+    "x_cm",
+    "y_cm",
+    "z_cm"
+  ],
+  "target_col": "PPFD_spec_mean",
+  "input_csv": "data/Train_data-9pos_xyz.csv",
+  "n_rows": 312,
+  "test_metrics": {
+    "RMSE": 0.17943347217300024,
+    "MAE": 0.09417935397997505,
+    "R2": 0.9994220719395326,
+    "Bias": -0.03193298875536695,
+    "NRMSE_mean": 0.012629935953593107,
+    "NRMSE_range": 0.005791078992383402
+  },
+  "used_tuning": true,
+  "available_models": [
+    "DummyMean",
+    "LinearRegression",
+    "Ridge",
+    "Lasso",
+    "ElasticNet",
+    "Huber",
+    "PLSR",
+    "PCR_Ridge",
+    "KNN",
+    "SVR_RBF",
+    "KernelRidge_RBF",
+    "DecisionTree",
+    "RandomForest",
+    "ExtraTrees",
+    "GradientBoosting",
+    "HistGBR",
+    "GPR",
+    "MLP"
+  ]
+}

@@ -578,9 +578,27 @@ def trigger_spectrometer_ppfd(
 
         try:
             lock_ctx = serial_lock if serial_lock is not None else contextlib.nullcontext()
-            with lock_ctx:
-                with _pushd(run_dir):
-                    result = complete_spectrum_measurement(current_ser)
+            # Watchdog: a USB disconnect during read can leave pyserial in
+            # a state where read() never returns even though the kernel re-
+            # enumerates the device. SIGALRM forces a TimeoutError so the
+            # outer retry loop closes the fd and re-opens against the new
+            # device path. 60s is generous (lib's internal max wait is 120s
+            # but in healthy state spec measurement takes 2-12s).
+            spec_watchdog_sec = 150  # lib's internal max wait is 120s; +30s grace
+            old_handler = signal.signal(
+                signal.SIGALRM,
+                lambda *_: (_ for _ in ()).throw(
+                    TimeoutError(f"spectrometer call exceeded {spec_watchdog_sec}s — assuming USB hang")
+                ),
+            )
+            signal.alarm(spec_watchdog_sec)
+            try:
+                with lock_ctx:
+                    with _pushd(run_dir):
+                        result = complete_spectrum_measurement(current_ser)
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, old_handler)
             if not isinstance(result, tuple) or len(result) < 1:
                 return None, None, None, None, current_ser
 
@@ -619,12 +637,17 @@ def trigger_spectrometer_ppfd(
                 return None, ppfd_blue, ppfd_red, standard_csv_path, current_ser
             return ppfd, ppfd_blue, ppfd_red, standard_csv_path, current_ser
         except Exception as exc:
-            is_serial_error = isinstance(exc, serial_exc_type) or isinstance(exc, OSError)
+            is_serial_error = (
+                isinstance(exc, serial_exc_type)
+                or isinstance(exc, OSError)
+                or isinstance(exc, TimeoutError)  # watchdog-induced; treat as USB hang
+            )
             msg = str(exc)
             if (
                 "Input/output error" in msg
                 or "device reports readiness to read but returned no data" in msg
                 or "write failed" in msg
+                or "exceeded" in msg
             ):
                 is_serial_error = True
 

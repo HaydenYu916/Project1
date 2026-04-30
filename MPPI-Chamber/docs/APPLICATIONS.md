@@ -27,7 +27,7 @@ applications/
 conda activate ppfd_env
 
 # 进入项目目录
-cd LED_MPPI_Controller
+cd MPPI-Chamber
 ```
 
 ### 2. 配置参数

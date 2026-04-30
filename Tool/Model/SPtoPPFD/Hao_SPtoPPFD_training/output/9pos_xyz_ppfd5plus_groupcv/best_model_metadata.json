@@ -1,0 +1,49 @@
+{
+  "model_name": "PLSR",
+  "model_version": "tuned",
+  "feature_columns": [
+    "sp_415_mean",
+    "sp_445_mean",
+    "sp_480_mean",
+    "sp_515_mean",
+    "sp_555_mean",
+    "sp_590_mean",
+    "sp_630_mean",
+    "sp_680_mean",
+    "x_cm",
+    "y_cm",
+    "z_cm"
+  ],
+  "target_col": "PPFD_spec_mean",
+  "input_csv": "data/Train_data-9pos_xyz_ppfd5plus.csv",
+  "n_rows": 281,
+  "test_metrics": {
+    "RMSE": 3.0212688322841323,
+    "MAE": 2.573313539022339,
+    "R2": 0.4072021046280041,
+    "Bias": -0.26430034211329634,
+    "NRMSE_mean": 0.2306966034340035,
+    "NRMSE_range": 0.20912593626083767
+  },
+  "used_tuning": true,
+  "available_models": [
+    "DummyMean",
+    "LinearRegression",
+    "Ridge",
+    "Lasso",
+    "ElasticNet",
+    "Huber",
+    "PLSR",
+    "PCR_Ridge",
+    "KNN",
+    "SVR_RBF",
+    "KernelRidge_RBF",
+    "DecisionTree",
+    "RandomForest",
+    "ExtraTrees",
+    "GradientBoosting",
+    "HistGBR",
+    "GPR",
+    "MLP"
+  ]
+}

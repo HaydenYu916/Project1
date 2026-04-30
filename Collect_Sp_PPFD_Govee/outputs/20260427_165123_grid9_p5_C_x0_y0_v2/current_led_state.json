@@ -1,7 +1,7 @@
 {
-  "updated_at": "2026-04-27T16:57:57.173",
-  "pwm_r": 30,
+  "updated_at": "2026-04-27T19:00:46.498",
+  "pwm_r": 0,
   "pwm_b": 0,
-  "phase": "target",
-  "segment_id": 2
+  "phase": "finished",
+  "segment_id": null
 }

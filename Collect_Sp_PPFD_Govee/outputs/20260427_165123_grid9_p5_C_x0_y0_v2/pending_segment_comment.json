@@ -1,10 +1,10 @@
 {
-  "comment_id": "1-2026-04-27T16:57:13.849",
-  "segment_id": 1,
-  "pwm_r": 10,
-  "pwm_b": 0,
-  "rb_ratio_pwm": "inf",
-  "PPFD_spec_mean": 2.1391586462656655,
-  "ppfd_red_mean": 2.130380312601725,
-  "ppfd_blue_mean": 0.00027108468445173156
+  "comment_id": "45-2026-04-27T19:00:46.497",
+  "segment_id": 45,
+  "pwm_r": 0,
+  "pwm_b": 90,
+  "rb_ratio_pwm": "0.000000",
+  "PPFD_spec_mean": 34.020835876464844,
+  "ppfd_red_mean": 0.1008333886663119,
+  "ppfd_blue_mean": 33.20462417602539
 }

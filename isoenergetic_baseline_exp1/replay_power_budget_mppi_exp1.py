@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = ROOT / "LED_MPPI_Controller" / "src"
+SRC_DIR = ROOT / "MPPI-Chamber" / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
@@ -87,13 +87,13 @@ def build_controller(
     u_std: float,
 ) -> tuple[LEDPlant, LEDMPPIController, float]:
     power_model = PWMtoPowerModel(include_intercept=True).fit(
-        str(ROOT / "LED_MPPI_Controller" / "data" / "calib_data.csv")
+        str(ROOT / "MPPI-Chamber" / "data" / "calib_data.csv")
     )
     plant = LEDPlant(
         base_ambient_temp=25.0,
         max_solar_vol=2.0,
         thermal_model_type="thermal",
-        model_dir=str(ROOT / "LED_MPPI_Controller" / "Thermal" / "exported_models"),
+        model_dir=str(ROOT / "MPPI-Chamber" / "Thermal" / "exported_models"),
         power_model=power_model,
         r_b_ratio=0.83,
         use_solar_vol_model=True,

@@ -1,0 +1,2 @@
+[2026-04-29T10:39:09.375] run_dir=/home/pi/Desktop/Project1/Collect_Sp_PPFD_Govee/outputs/20260429_103909_grid9_p7_TL_xneg9.5_y7
+[2026-04-29T10:39:09.375] segment_count=45

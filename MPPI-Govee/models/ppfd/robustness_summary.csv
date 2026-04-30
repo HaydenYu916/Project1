@@ -1,0 +1,7 @@
+Model,Missing_Strategy,Missing_Value,MAE_Mean,MAE_Std,RMSE_Mean,RMSE_Std,R2_Mean,R2_Std,R2_Min,R2_Max
+Lasso Regression,extreme_low,-3.0000,11.2198,7.5838,12.0110,7.8633,-4.4541,4.6483,-10.8391,0.8616
+SVR (Linear),extreme_low,-3.0000,11.2089,7.6259,11.9951,7.9114,-4.4640,4.6692,-10.8211,0.8625
+Ridge Regression,extreme_low,-3.0000,11.2478,7.5937,12.0381,7.8722,-4.4751,4.6650,-10.8937,0.8615
+Linear Regression,extreme_low,-3.0000,11.2481,7.5940,12.0384,7.8725,-4.4754,4.6652,-10.8944,0.8615
+SVR (RBF),extreme_low,-3.0000,13.8536,9.8856,14.7426,9.9133,-7.3525,8.3249,-23.2949,0.8558
+MLP Regressor,extreme_low,-3.0000,15.0252,11.4695,15.7004,11.5450,-9.0507,8.8030,-18.8563,0.9116

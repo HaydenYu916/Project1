@@ -4,8 +4,26 @@ Riotee Data Collector - Simplified Version
 Collects sensor data and outputs CSV
 """
 
-import time, logging, csv, os, sys, argparse, struct, json
+import time, logging, csv, os, sys, argparse, struct, json, fcntl, atexit
 from pathlib import Path
+
+# --- Single-instance lock ---------------------------------------------------
+# Prevent two collectors from running concurrently (would split BLE packets
+# between them and race on the shared CSV file). Uses an exclusive flock on
+# a sidecar file; OS releases it automatically on process exit.
+_LOCK_PATH = Path(__file__).resolve().parent / "riotee_collector.lock"
+_lock_fp = open(_LOCK_PATH, "w")
+try:
+    fcntl.flock(_lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.stderr.write(
+        f"riotee_data_collector: another instance already holds {_LOCK_PATH}; "
+        f"refusing to start a second copy.\n"
+    )
+    sys.exit(2)
+_lock_fp.write(str(os.getpid()))
+_lock_fp.flush()
+atexit.register(lambda: (_lock_fp.close(), _LOCK_PATH.unlink(missing_ok=True)))
 import numpy as np
 import pandas as pd
 import paho.mqtt.client as mqtt

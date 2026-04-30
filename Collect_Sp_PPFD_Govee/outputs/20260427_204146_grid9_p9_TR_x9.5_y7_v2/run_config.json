@@ -1,0 +1,224 @@
+{
+  "created_at": "2026-04-27T20:41:46.069",
+  "run_name": "20260427_204146_grid9_p9_TR_x9.5_y7_v2",
+  "run_dir": "/home/pi/Desktop/Project1/Collect_Sp_PPFD_Govee/outputs/20260427_204146_grid9_p9_TR_x9.5_y7_v2",
+  "timing": {
+    "Ts": 10.0,
+    "T_off": 20.0,
+    "T_blue": 20.0,
+    "T_settle": 20.0,
+    "T_meas": 100.0,
+    "T_seg": 160.0,
+    "N_spec": 3
+  },
+  "ratios": [
+    {
+      "r": 1,
+      "b": 0
+    },
+    {
+      "r": 4,
+      "b": 1
+    },
+    {
+      "r": 3,
+      "b": 2
+    },
+    {
+      "r": 2,
+      "b": 1
+    },
+    {
+      "r": 1,
+      "b": 1
+    },
+    {
+      "r": 1,
+      "b": 2
+    },
+    {
+      "r": 2,
+      "b": 3
+    },
+    {
+      "r": 1,
+      "b": 4
+    },
+    {
+      "r": 0,
+      "b": 1
+    }
+  ],
+  "totals": [
+    10,
+    30,
+    50,
+    70,
+    90
+  ],
+  "segment_count": 45,
+  "segments_preview": [
+    {
+      "segment_id": 1,
+      "segment_type": "normal",
+      "ratio_r": 1,
+      "ratio_b": 0,
+      "total_pwm": 10,
+      "pwm_r": 10,
+      "pwm_b": 0,
+      "condition_index": 1
+    },
+    {
+      "segment_id": 2,
+      "segment_type": "normal",
+      "ratio_r": 1,
+      "ratio_b": 0,
+      "total_pwm": 30,
+      "pwm_r": 30,
+      "pwm_b": 0,
+      "condition_index": 2
+    },
+    {
+      "segment_id": 3,
+      "segment_type": "normal",
+      "ratio_r": 1,
+      "ratio_b": 0,
+      "total_pwm": 50,
+      "pwm_r": 50,
+      "pwm_b": 0,
+      "condition_index": 3
+    },
+    {
+      "segment_id": 4,
+      "segment_type": "normal",
+      "ratio_r": 1,
+      "ratio_b": 0,
+      "total_pwm": 70,
+      "pwm_r": 70,
+      "pwm_b": 0,
+      "condition_index": 4
+    },
+    {
+      "segment_id": 5,
+      "segment_type": "normal",
+      "ratio_r": 1,
+      "ratio_b": 0,
+      "total_pwm": 90,
+      "pwm_r": 90,
+      "pwm_b": 0,
+      "condition_index": 5
+    },
+    {
+      "segment_id": 6,
+      "segment_type": "normal",
+      "ratio_r": 4,
+      "ratio_b": 1,
+      "total_pwm": 10,
+      "pwm_r": 8,
+      "pwm_b": 2,
+      "condition_index": 6
+    },
+    {
+      "segment_id": 7,
+      "segment_type": "normal",
+      "ratio_r": 4,
+      "ratio_b": 1,
+      "total_pwm": 30,
+      "pwm_r": 24,
+      "pwm_b": 6,
+      "condition_index": 7
+    },
+    {
+      "segment_id": 8,
+      "segment_type": "normal",
+      "ratio_r": 4,
+      "ratio_b": 1,
+      "total_pwm": 50,
+      "pwm_r": 40,
+      "pwm_b": 10,
+      "condition_index": 8
+    },
+    {
+      "segment_id": 9,
+      "segment_type": "normal",
+      "ratio_r": 4,
+      "ratio_b": 1,
+      "total_pwm": 70,
+      "pwm_r": 56,
+      "pwm_b": 14,
+      "condition_index": 9
+    },
+    {
+      "segment_id": 10,
+      "segment_type": "normal",
+      "ratio_r": 4,
+      "ratio_b": 1,
+      "total_pwm": 90,
+      "pwm_r": 72,
+      "pwm_b": 18,
+      "condition_index": 10
+    }
+  ],
+  "args": {
+    "ts": 10.0,
+    "ratios": "1:0,4:1,3:2,2:1,1:1,1:2,2:3,1:4,0:1",
+    "totals": "10,30,50,70,90",
+    "n_spec": 3,
+    "time_scale": 1.0,
+    "quick_run": false,
+    "prewarm_min": 3.0,
+    "prewarm_r": 50,
+    "prewarm_b": 50,
+    "led_failure_policy": "wait",
+    "led_retry_sec": 5.0,
+    "led_settle_ms": 300,
+    "ble_adapter": null,
+    "drift_every": 0,
+    "drift_pwm_r": 60,
+    "drift_pwm_b": 60,
+    "spec_port": "/dev/ttyACM1",
+    "spec_open_retries": 8,
+    "spec_open_retry_sec": 2.0,
+    "spec_meas_retries": 3,
+    "spec_meas_retry_sec": 1.0,
+    "sensor_mode": "external",
+    "sensor_charge_after_sec": 3600.0,
+    "set_sensor_sleep": false,
+    "sensor_device_id": "all",
+    "sensor_sleep_retries": 6,
+    "sensor_sleep_retry_sec": 5.0,
+    "output_dir": "/home/pi/Desktop/Project1/Collect_Sp_PPFD_Govee/outputs",
+    "skip_condition_summary": false,
+    "run_name": "grid9_p9_TR_x9.5_y7_v2",
+    "transport": "ha",
+    "ha_timeout_sec": 10.0,
+    "ha_poll_sec": 0.3,
+    "vcap_guard": true,
+    "vcap_csv": "/home/pi/Desktop/Project1/Tool/Sensor_riotee_server/logs/riotee_data_all.csv",
+    "vcap_low": 3.3,
+    "vcap_recover": 4.5,
+    "vcap_max_wait_sec": 600.0,
+    "vcap_poll_sec": 2.0,
+    "vcap_fresh_sec": 120.0
+  },
+  "devices": {
+    "Red": {
+      "mac": "CE:F8:00:86:19:40",
+      "segment_mask": 63,
+      "color": [
+        255,
+        0,
+        0
+      ]
+    },
+    "Blue": {
+      "mac": "CE:F8:00:86:19:40",
+      "segment_mask": 4032,
+      "color": [
+        0,
+        0,
+        255
+      ]
+    }
+  }
+}
