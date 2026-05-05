@@ -8,8 +8,9 @@ import numpy as np
 
 DEFAULT_MODEL = os.getenv('LLM_MODEL', 'gpt-oss:120b')
 OLLAMA_BASE = os.getenv('OLLAMA_BASE_URL', 'http://127.0.0.1:11434')
-LLM_TIMEOUT_SECONDS = int(os.getenv('LLM_TIMEOUT_SECONDS', '180'))
-OLLAMA_KEEP_ALIVE = os.getenv('OLLAMA_KEEP_ALIVE', '30m')
+LLM_TIMEOUT_SECONDS = int(os.getenv('LLM_TIMEOUT_SECONDS', '600'))
+OLLAMA_CONNECT_TIMEOUT_SECONDS = int(os.getenv('OLLAMA_CONNECT_TIMEOUT_SECONDS', '10'))
+OLLAMA_KEEP_ALIVE = os.getenv('OLLAMA_KEEP_ALIVE', '-1')
 
 @dataclass
 class LLMLEDPolicy:
@@ -48,6 +49,20 @@ def _normalize_explanation(value: Any) -> list[str]:
     if value is None:
         return []
     return [str(value)]
+
+
+def _parse_ollama_keep_alive(value: Any) -> Any:
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    if text.lstrip("-").isdigit():
+        return int(text)
+
+    return text
 
 def _build_prompt(observations: Dict[str, Any], context: Dict[str, Any], forecast: Dict[str, Any], policy: Dict[str, Any]) -> str:
     llm_observations = dict(observations)
@@ -96,11 +111,18 @@ def call_llm(prompt: str) -> str:
     data = {
         "model": DEFAULT_MODEL,
         "prompt": prompt,
-        "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {"temperature": 0.2},
     }
+    keep_alive = _parse_ollama_keep_alive(OLLAMA_KEEP_ALIVE)
+    if keep_alive is not None:
+        data["keep_alive"] = keep_alive
     try:
-        r = requests.post(url, json=data, timeout=LLM_TIMEOUT_SECONDS, stream=True)
+        r = requests.post(
+            url,
+            json=data,
+            timeout=(OLLAMA_CONNECT_TIMEOUT_SECONDS, LLM_TIMEOUT_SECONDS),
+            stream=True,
+        )
         r.raise_for_status()
         return ''.join(json.loads(line)['response'] for line in r.iter_lines() if line and 'response' in json.loads(line))
     except Exception as e:

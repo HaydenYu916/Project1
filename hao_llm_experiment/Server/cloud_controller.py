@@ -4,6 +4,7 @@ import time
 import datetime
 import logging
 import threading
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -53,12 +54,12 @@ def load_cloud_config():
 
 
 CLOUD_CONFIG = load_cloud_config()
-LOG_DIR = CLOUD_CONFIG["log_dir"]
+LOG_DIR_PATH = Path(CLOUD_CONFIG["log_dir"])
+if not LOG_DIR_PATH.is_absolute():
+    LOG_DIR_PATH = BASE_DIR / LOG_DIR_PATH
+LOG_DIR = str(LOG_DIR_PATH)
 TIMEZONE = ZoneInfo(CLOUD_CONFIG["timezone"])
 os.makedirs(LOG_DIR, exist_ok=True)
-
-timestamp_str = datetime.datetime.now(TIMEZONE).strftime("%Y%m%d")
-log_filename = os.path.join(LOG_DIR, f'cloud_agronomist_{timestamp_str}.log')
 
 class TimezoneFormatter(logging.Formatter):
     def __init__(self, fmt=None, datefmt=None, tz=None):
@@ -72,11 +73,64 @@ class TimezoneFormatter(logging.Formatter):
         return dt.strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
 
 
+class DailyTimezoneRotatingFileHandler(TimedRotatingFileHandler):
+    def __init__(self, log_dir, filename_prefix, tz, encoding="utf-8"):
+        self.log_dir = Path(log_dir)
+        self.filename_prefix = filename_prefix
+        self.tz = tz
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.current_log_date = self._date_str(time.time())
+        initial_filename = self._build_filename(self.current_log_date)
+        super().__init__(
+            filename=initial_filename,
+            when="midnight",
+            interval=1,
+            backupCount=0,
+            encoding=encoding,
+            delay=True,
+        )
+        self.rolloverAt = self.computeRollover(time.time())
+
+    def _date_str(self, epoch_seconds):
+        dt = datetime.datetime.fromtimestamp(epoch_seconds, tz=self.tz)
+        return dt.strftime("%Y%m%d")
+
+    def _build_filename(self, date_str):
+        return str(self.log_dir / f"{self.filename_prefix}_{date_str}.log")
+
+    def computeRollover(self, current_time):
+        current_dt = datetime.datetime.fromtimestamp(current_time, tz=self.tz)
+        next_date = current_dt.date() + datetime.timedelta(days=1)
+        next_midnight = datetime.datetime.combine(next_date, datetime.time.min, tzinfo=self.tz)
+        return int(next_midnight.timestamp())
+
+    def shouldRollover(self, record):
+        record_date = self._date_str(record.created)
+        return int(record.created >= self.rolloverAt or record_date != self.current_log_date)
+
+    def doRollover(self):
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+
+        current_time = time.time()
+        self.current_log_date = self._date_str(current_time)
+        self.baseFilename = os.path.abspath(self._build_filename(self.current_log_date))
+        self.rolloverAt = self.computeRollover(current_time)
+
+        if not self.delay:
+            self.stream = self._open()
+
+
 formatter = TimezoneFormatter(
     fmt='%(asctime)s - %(levelname)s - %(message)s',
     tz=TIMEZONE,
 )
-file_handler = logging.FileHandler(log_filename)
+file_handler = DailyTimezoneRotatingFileHandler(
+    log_dir=LOG_DIR,
+    filename_prefix="cloud_agronomist",
+    tz=TIMEZONE,
+)
 file_handler.setFormatter(formatter)
 stream_handler = logging.StreamHandler()
 stream_handler.setFormatter(formatter)
