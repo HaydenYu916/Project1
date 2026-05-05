@@ -2,7 +2,7 @@
 log_dir = "logs/cloud"
 
 [timezone]
-name = "Australia/Sydney"
+name = "Europe/Paris"
 
 [mqtt]
 broker = "azure.nocolor.cc"
