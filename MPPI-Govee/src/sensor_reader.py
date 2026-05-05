@@ -16,6 +16,8 @@ from typing import Optional, Tuple
 # 默认配置（按仓库目录结构推导）
 DEFAULT_DEVICE_ID = "T6ncwg=="
 DEFAULT_CO2_PPM = 450.0
+DEFAULT_RH = 60.0
+DEFAULT_PIPE_TEMP = 20.0
 
 DEFAULT_RIOTEE_DATA_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "Tool", "Sensor_riotee_server", "logs", "riotee_data_all.csv"
@@ -72,6 +74,51 @@ class DemoSensorReader:
             print(f"错误: 读取Riotee数据失败: {e}")
             return None, None, None, None
 
+    # -------- 湿度 (Riotee CSV) --------
+    def read_latest_humidity(self, window_minutes: int = 10) -> Optional[float]:
+        """读取最新一条 humidity (%);失败返回 None"""
+        try:
+            if not os.path.exists(self.riotee_data_path):
+                return None
+            df = pd.read_csv(self.riotee_data_path, comment="#")
+            if "humidity" not in df.columns:
+                return None
+            device_data = df[df["device_id"] == self.device_id].copy()
+            if device_data.empty:
+                return None
+            device_data["timestamp"] = pd.to_datetime(device_data["timestamp"])  # type: ignore
+            latest_time = device_data["timestamp"].max()
+            window_start = latest_time - pd.Timedelta(minutes=window_minutes)
+            recent = device_data[device_data["timestamp"] >= window_start]
+            if recent.empty:
+                return None
+            return float(recent["humidity"].dropna().iloc[-1])
+        except Exception as e:
+            print(f"错误: 读取湿度失败: {e}")
+            return None
+
+    # -------- GL-Gym IndoorClimate 适配器 --------
+    def read_indoor_climate(
+        self,
+        window_minutes: int = 10,
+        pipe_temp: float = DEFAULT_PIPE_TEMP,
+    ) -> "list[float]":
+        """返回 GL-Gym IndoorClimateObservations 顺序的 4 元数组:
+        [co2_air (ppm), temp_air (°C), rh_air (%), pipe_temp (°C)]
+
+        缺失项以默认值/常量回填。pipe_temp 在 chamber 场景下没有硬件,
+        默认置为 DEFAULT_PIPE_TEMP,可由调用方覆盖。
+        """
+        temp, _, _, _ = self.read_latest_riotee_data(window_minutes=window_minutes)
+        rh = self.read_latest_humidity(window_minutes=window_minutes)
+        co2 = self.read_latest_co2_data()
+        return [
+            float(co2) if co2 is not None else DEFAULT_CO2_PPM,
+            float(temp) if temp is not None else 20.0,
+            float(rh) if rh is not None else DEFAULT_RH,
+            float(pipe_temp),
+        ]
+
     # -------- CO2（两列表 CSV: timestamp, co2） --------
     def read_latest_co2_data(self) -> float:
         """仅返回 ppm；若失败返回默认值"""
@@ -114,5 +161,7 @@ __all__ = [
     "DemoSensorReader",
     "DEFAULT_DEVICE_ID",
     "DEFAULT_CO2_PPM",
+    "DEFAULT_RH",
+    "DEFAULT_PIPE_TEMP",
     "DEFAULT_RIOTEE_DATA_PATH",
 ]

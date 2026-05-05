@@ -1,0 +1,18 @@
+============================================================
+ GL-Gym demo: real-sensor-seeded comparison
+============================================================
+Sensor snapshot (ALL_Data.csv:row419):
+  T_air = 30.00 °C
+  RH    = 65.00 %
+  CO2   = 800.00 ppm
+Scenario: {'location': 'Amsterdam', 'growth_year': 2010, 'start_day': 90}
+Sim length: 3 days
+
+[default RB]  total energy = 7.3161 kWh/m²    ∫Pn = 65632.87 mg CO₂/m²
+[eco RB]  total energy = 4.7712 kWh/m²    ∫Pn = 55527.40 mg CO₂/m²
+
+Energy saved by eco RB vs default RB: +34.8 %
+Cumulative-Pn change:                       -15.4 %
+
+Pn = mcAirCan (net canopy CO₂ assimilation) read directly from the
+GreenLight CasADi model — the true instantaneous photosynthesis flux.
