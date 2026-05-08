@@ -45,11 +45,15 @@ def define_aux_outputs(nx: int, nu: int, nd: int, n_params: int):
     fluxes from the GreenLight aux variables.
 
     Outputs (per m² floor area):
-        mcAirBuf  - gross net photosynthesis to buffer  [mg{CH2O} m^-2 s^-1]  (a[200])
-        mcAirCan  - net crop assimilation (CO2)         [mg{CO2}  m^-2 s^-1]  (a[216])
-        mcBufAir  - growth respiration                  [mg{CH2O} m^-2 s^-1]  (a[209])
-        mcOrgAir  - total maintenance respiration       [mg{CH2O} m^-2 s^-1]  (a[213])
-        parCan    - PAR absorbed by canopy              [umol m^-2 s^-1]      (a[191])
+        mcAirBuf   - gross net photosynthesis to buffer [mg{CH2O} m^-2 s^-1]  (a[200])
+        mcAirCan   - net crop assimilation (CO2)        [mg{CO2}  m^-2 s^-1]  (a[216])
+        mcBufAir   - growth respiration                 [mg{CH2O} m^-2 s^-1]  (a[209])
+        mcOrgAir   - total maintenance respiration      [mg{CH2O} m^-2 s^-1]  (a[213])
+        parCan     - PAR absorbed by canopy             [umol m^-2 s^-1]      (a[191])
+        P_gross    - gross canopy photosynthesis        [umol{CO2} m^-2 s^-1] (a[197])
+        P_photoresp- photorespiration                   [umol{CO2} m^-2 s^-1] (a[198])
+        P_leaf_net - instantaneous leaf-level net Pn    [mg{CO2}  m^-2 s^-1]  ((a[197]-a[198])*44e-3)
+                     ↑ this is the "instant chamber Pn", no buffer/sink coupling
     """
     x = ca.SX.sym("x", nx)
     u = ca.SX.sym("u", nu)
@@ -58,11 +62,16 @@ def define_aux_outputs(nx: int, nu: int, nd: int, n_params: int):
 
     a = aux_update(x, u, d, p)
 
+    # Leaf-level instantaneous net photosynthesis: gross − photorespiration.
+    # Converted from µmol{CO2}/m²/s → mg{CO2}/m²/s with M_CO2 = 44 g/mol.
+    P_leaf_net = (a[197] - a[198]) * 44e-3
+
     return ca.Function(
         "F_aux",
         [x, u, d, p],
-        [a[200], a[216], a[209], a[213], a[191]],
+        [a[200], a[216], a[209], a[213], a[191], a[197], a[198], P_leaf_net],
         ["x", "u", "d", "p"],
-        ["mcAirBuf", "mcAirCan", "mcBufAir", "mcOrgAir", "parCan"],
+        ["mcAirBuf", "mcAirCan", "mcBufAir", "mcOrgAir", "parCan",
+         "P_gross", "P_photoresp", "P_leaf_net"],
     )
 

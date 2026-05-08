@@ -68,3 +68,26 @@ examples/result/
 
 riotee-env.tar.gz
 Tool/Sensor_riotee_server/riotee_collector.lock
+
+# Claude Code worktree metadata
+.claude/
+
+# MPPI-Govee experiment backups & training iterations
+MPPI-Govee/models/pwmtoppfd/*.bak_*
+MPPI-Govee/models/pwmtoppfd/training_data_v*.csv
+MPPI-Govee/models/pwmtoppfd/v[0-9]_run*/
+
+# EnvtoPN model backups
+Tool/Model/EnvtoPN/model/*.bak_*
+
+# Govee live calibration runs (May 2026+; pre-existing 04-26 run stays tracked)
+Collect_Sp_PPFD_Govee/outputs/2026050*/
+Collect_Sp_PPFD_Govee/outputs/2026051*/
+Collect_Sp_PPFD_Govee/outputs/202606*/
+
+# MPPI-Govee web archive (May 2026+)
+MPPI-Govee/web/archive/2026-05-*/
+MPPI-Govee/web/archive/2026-06*/
+
+# Timestamped GreenLight-Gym2 demo runs
+Tool/GreenLight-Gym2/demo/output/closed_loop_*.csv

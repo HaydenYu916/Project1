@@ -137,6 +137,8 @@ class LEDPlant:
         y_cm: float = 0.0,
         z_cm: float = 10.0,
         use_govee_pwm_model: bool = True,
+        use_thermal_model: bool = True,
+        sim_thermal: dict | None = None,   # if set, use simple greenhouse thermal in predict_batch
         demo_gain: float = 1.0,
         auto_target_ppfd: bool = False,
         auto_target_fraction: float = 0.7,
@@ -155,6 +157,13 @@ class LEDPlant:
                                                 y_cm=float(y_cm),
                                                 z_cm=float(z_cm))
         self.use_govee_pwm_model = use_govee_pwm_model
+        self.use_thermal_model = use_thermal_model
+        # Greenhouse-style first-order thermal model for sim use:
+        #   T_steady(u_lamp_norm) = T_outdoor + u_lamp_norm * delta_T
+        #   T_next = T + (T_steady - T) * alpha
+        # where u_lamp_norm = ppfd_command / lamp_ppfd_max   (∈ [0, 1])
+        # If None and use_thermal_model=False, T is held constant (legacy behaviour).
+        self.sim_thermal = dict(sim_thermal) if sim_thermal else None
         # demo_gain: 在所有模型 PPFD 输出 / target 之间应用的虚拟放大倍数。
         # Govee H6056 在板上方 10 cm 时实际 PPFD 上限只有 ~35-50 µmol/m²/s
         # （真植物灯通常 200-500），不放大的话 MPPI 永远饱和到 100/100。
@@ -571,6 +580,143 @@ class LEDPlant:
             np.array(b_pwm_predictions),
         )
 
+    def predict_batch(
+        self,
+        ppfd_seqs: np.ndarray,
+        initial_temp: float,
+        dt: float = 900.0,
+        prev_control: float | None = None,
+    ):
+        """Batched horizon prediction over many candidate sequences at once.
+
+        Args:
+            ppfd_seqs: (N, H) array — N candidate PPFD control sequences.
+            initial_temp: starting chamber temp shared by all candidates.
+            dt, prev_control: same semantics as `predict`.
+
+        Returns: tuple of (N, H) arrays:
+            (ppfd_in, temp_pred, power_pred, photo_pred, r_pwm, b_pwm)
+
+        Speedup vs looping `predict` per sample comes from collapsing the
+        Pn model from N×H single calls into H batch calls of size N.
+        Thermal step stays per-sample (it's stateful and cheap numpy).
+        """
+        if self.power_model is None:
+            raise RuntimeError("功率模型未提供")
+        seqs = np.asarray(ppfd_seqs, dtype=float)
+        if seqs.ndim != 2:
+            raise ValueError(f"ppfd_seqs must be 2D (N, H); got shape {seqs.shape}")
+        N, H = seqs.shape
+
+        # Thermal models — only when enabled (chamber control). For sim use
+        # the caller passes the env's true air temperature each tick, so the
+        # chamber thermal sub-model is irrelevant; we hold T constant over
+        # the (short) MPPI horizon.
+        if self.use_thermal_model:
+            temp_models = [ThermalModelManager(self.thermal_params) for _ in range(N)]
+            for tm in temp_models:
+                tm.reset(initial_temp)
+        else:
+            temp_models = None
+
+        if prev_control is None:
+            prev_control = float(self.current_control)
+        prev = np.full(N, float(prev_control))
+
+        co2 = float(self.co2_ppm)
+        rb = float(self.r_b_ratio)
+        power_key = self._get_power_model_key(rb)
+
+        pwm_r_arr  = np.zeros((N, H))
+        pwm_b_arr  = np.zeros((N, H))
+        power_arr  = np.zeros((N, H))
+        temp_arr   = np.zeros((N, H))
+        photo_arr  = np.zeros((N, H))
+
+        # Pre-compute PPFD→PWM inversion table ONCE for this rb (chamber mode
+        # only). When Govee model isn't loaded (sim use), we skip PWM entirely
+        # and approximate power directly from PPFD — sim doesn't need PWM.
+        inv_ppfds_sorted = inv_totals_sorted = None
+        if self.govee_pwm_model is not None:
+            inv_totals = np.linspace(0.0, 100.0, 51)
+            inv_r_full = inv_totals * rb
+            inv_b_full = inv_totals * (1.0 - rb)
+            try:
+                inv_ppfds = np.maximum(
+                    self.govee_pwm_model.predict_batch(inv_r_full, inv_b_full), 0.0
+                )
+                order = np.argsort(inv_ppfds)
+                inv_ppfds_sorted = inv_ppfds[order]
+                inv_totals_sorted = inv_totals[order]
+            except Exception:
+                inv_ppfds_sorted = None
+
+        # Linear power proxy when not using Govee model: ~3 W per 100 µmol PPFD
+        # at canopy (typical horticultural LED efficacy of 2.5 µmol/J).
+        SIM_W_PER_PPFD = 0.03
+
+        for h in range(H):
+            ppfd_h = seqs[:, h]
+            if inv_ppfds_sorted is not None:
+                # Chamber mode: invert Govee model via cached table (vectorized)
+                target_real = np.maximum(0.0, ppfd_h / self.demo_gain)
+                totals_h = np.interp(target_real, inv_ppfds_sorted, inv_totals_sorted)
+                pwm_r_arr[:, h] = totals_h * rb
+                pwm_b_arr[:, h] = totals_h * (1.0 - rb)
+                total_pwm_h = totals_h
+                try:
+                    pw = self.power_model.predict(total_pwm=total_pwm_h, key=power_key)
+                    power_arr[:, h] = np.asarray(pw, dtype=float)
+                except Exception:
+                    for i in range(N):
+                        power_arr[i, h] = self.power_model.predict(
+                            total_pwm=float(total_pwm_h[i]), key=power_key,
+                        )
+            else:
+                # Sim mode: skip PWM entirely (not used downstream), power from PPFD
+                pwm_r_arr[:, h] = 0.0
+                pwm_b_arr[:, h] = 0.0
+                power_arr[:, h] = ppfd_h * SIM_W_PER_PPFD
+            # Thermal step (per-sample, stateful) — chamber, sim, or constant
+            if temp_models is not None:
+                # Chamber thermal model (real LED chamber dynamics)
+                for i in range(N):
+                    sv = self._ppfd_to_solar_vol(float(ppfd_h[i]), rb)
+                    temp_arr[i, h] = temp_models[i].step(
+                        power=float(power_arr[i, h]),
+                        dt=dt,
+                        solar_vol=sv,
+                        control_change=float(ppfd_h[i] - prev[i]),
+                    )
+            elif self.sim_thermal is not None:
+                # Greenhouse-style first-order thermal model (vectorized).
+                # Tracks T_prev across horizon: starts at initial_temp at h=0,
+                # then carries over from the previous loop iteration.
+                if h == 0:
+                    T_prev_h = np.full(N, float(initial_temp))
+                else:
+                    T_prev_h = temp_arr[:, h - 1]
+                T_outdoor = float(self.sim_thermal.get("t_outdoor", 22.0))
+                delta_T   = float(self.sim_thermal.get("delta_t_at_u1", 18.0))
+                alpha     = float(self.sim_thermal.get("alpha", 0.3))
+                lamp_max  = float(self.sim_thermal.get("lamp_ppfd_max", 500.0))
+                u_norm    = np.clip(ppfd_h / max(lamp_max, 1.0), 0.0, 1.0)
+                T_steady  = T_outdoor + u_norm * delta_T
+                temp_arr[:, h] = T_prev_h + (T_steady - T_prev_h) * alpha
+            else:
+                temp_arr[:, h] = initial_temp   # hold T constant
+            # Pn batch predict — THE big speedup (1 call instead of N)
+            df = pd.DataFrame({
+                "T":    temp_arr[:, h],
+                "CO2":  np.full(N, co2),
+                "R:B":  np.full(N, rb),
+                "PPFD": ppfd_h,
+            })[self.pn_feature_columns]
+            photo_arr[:, h] = np.maximum(0.0, self.pn_pipeline.predict(df))
+            prev = ppfd_h
+
+        return seqs, temp_arr, power_arr, photo_arr, pwm_r_arr, pwm_b_arr
+
     def get_thermal_model_info(self):
         runtime_info = {}
         if hasattr(self.thermal_model, "get_model_info"):
@@ -815,20 +961,68 @@ class LEDMPPIController:
             ppfd_ref_seq = np.full(self.horizon, float(self.target_ppfd), dtype=float)
 
         samples = self._sample_control_sequences(mean_sequence)
+        N, H = samples.shape
 
-        # 1. 收集每条样本的原始分项
-        comps = [
-            self._compute_components(samples[i], current_temp, ppfd_ref_seq)
-            for i in range(self.num_samples)
-        ]
-        valid = np.array([c["valid"] for c in comps])
-        photo_arr   = np.array([c["photo_sum"]        for c in comps], dtype=float)
-        power_arr   = np.array([c["power_sq_sum"]     for c in comps], dtype=float)
-        du_arr      = np.array([c["du_sq_sum"]        for c in comps], dtype=float)
-        ref_arr     = np.array([c["ref_sq_sum"]       for c in comps], dtype=float)
-        temp_arr    = np.array([c["temp_violation"]   for c in comps], dtype=float)
-        budget_arr  = np.array([c["power_budget_dev"] for c in comps], dtype=float)
-        oob_arr     = np.array([c["oob_violation"]    for c in comps], dtype=float)
+        # 1. 批量预测一次 (N×H 个 Pn 样本一次性 sklearn batch),取代之前 N 次单样本调用
+        try:
+            (_seqs, temp_pred, power_pred, photo_pred,
+             _r_pwm, _b_pwm) = self.plant.predict_batch(
+                samples, current_temp, dt=self.dt, prev_control=self.u_prev,
+            )
+            valid_all = True
+        except Exception as exc:
+            print(f"⚠️ MPPI predict_batch failed: {exc}; falling back to per-sample loop")
+            valid_all = False
+
+        if valid_all:
+            # 向量化算各 cost 分量 — 全部 (N,H) → (N,) reductions
+            ref_seq = ppfd_ref_seq
+            if ref_seq is None and self.target_ppfd is not None:
+                ref_seq = np.full(H, float(self.target_ppfd))
+            if ref_seq is not None:
+                ref_seq = np.asarray(ref_seq, dtype=float)
+                if ref_seq.shape[0] < H:
+                    ref_seq = np.pad(ref_seq, (0, H - ref_seq.shape[0]), mode="edge")
+                ref_seq = ref_seq[:H]
+                ref_arr = np.sum((samples - ref_seq[None, :]) ** 2, axis=1)
+            else:
+                ref_arr = np.zeros(N)
+
+            over  = np.maximum(0.0, temp_pred - self.temp_max)
+            under = np.maximum(0.0, self.temp_min - temp_pred)
+            temp_arr = np.sum(over ** 2 + under ** 2, axis=1)
+
+            if self.target_mean_power is not None and self.power_budget_weight > 0.0:
+                budget_arr = (np.mean(power_pred, axis=1) - float(self.target_mean_power)) ** 2
+            else:
+                budget_arr = np.zeros(N)
+
+            du_seq = np.diff(np.concatenate(
+                [np.full((N, 1), self.u_prev), samples], axis=1
+            ), axis=1)
+            du_arr = np.sum(du_seq ** 2, axis=1)
+
+            oob_low  = np.maximum(0.0, self.ppfd_train_min - samples)
+            oob_high = np.maximum(0.0, samples - self.ppfd_train_max)
+            oob_arr  = np.sum(oob_low ** 2 + oob_high ** 2, axis=1)
+
+            photo_arr = np.sum(photo_pred, axis=1)
+            power_arr = np.sum(power_pred ** 2, axis=1)
+            valid     = np.ones(N, dtype=bool)
+        else:
+            # Fallback: original per-sample loop (kept for safety)
+            comps = [
+                self._compute_components(samples[i], current_temp, ppfd_ref_seq)
+                for i in range(N)
+            ]
+            valid = np.array([c["valid"] for c in comps])
+            photo_arr   = np.array([c["photo_sum"]        for c in comps], dtype=float)
+            power_arr   = np.array([c["power_sq_sum"]     for c in comps], dtype=float)
+            du_arr      = np.array([c["du_sq_sum"]        for c in comps], dtype=float)
+            ref_arr     = np.array([c["ref_sq_sum"]       for c in comps], dtype=float)
+            temp_arr    = np.array([c["temp_violation"]   for c in comps], dtype=float)
+            budget_arr  = np.array([c["power_budget_dev"] for c in comps], dtype=float)
+            oob_arr     = np.array([c["oob_violation"]    for c in comps], dtype=float)
 
         # 2. 软目标做批内 z-score:Pn / Power / Δu / Ref-tracking
         photo_z = self._zscore(photo_arr)

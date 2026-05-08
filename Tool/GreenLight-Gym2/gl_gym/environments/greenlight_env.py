@@ -262,11 +262,16 @@ class GreenLightEnv(gym.Env):
                 p=ca.DM(self.p),
             )
             self.aux_outputs = {
-                "mcAirBuf": float(aux["mcAirBuf"]),
-                "mcAirCan": float(aux["mcAirCan"]),
-                "mcBufAir": float(aux["mcBufAir"]),
-                "mcOrgAir": float(aux["mcOrgAir"]),
-                "parCan":   float(aux["parCan"]),
+                "mcAirBuf":    float(aux["mcAirBuf"]),
+                "mcAirCan":    float(aux["mcAirCan"]),
+                "mcBufAir":    float(aux["mcBufAir"]),
+                "mcOrgAir":    float(aux["mcOrgAir"]),
+                "parCan":      float(aux["parCan"]),
+                # Leaf-level instantaneous Pn (no buffer/sink coupling) — same
+                # semantics as a chamber-scale Pn = f(PPFD, CO2, T) model.
+                "P_gross":     float(aux["P_gross"]),
+                "P_photoresp": float(aux["P_photoresp"]),
+                "P_leaf_net":  float(aux["P_leaf_net"]),
             }
 
         except:
@@ -275,6 +280,7 @@ class GreenLightEnv(gym.Env):
             self.aux_outputs = {
                 "mcAirBuf": 0.0, "mcAirCan": 0.0,
                 "mcBufAir": 0.0, "mcOrgAir": 0.0, "parCan": 0.0,
+                "P_gross": 0.0, "P_photoresp": 0.0, "P_leaf_net": 0.0,
             }
 
         # update time
