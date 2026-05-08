@@ -321,7 +321,7 @@ def effective_target_ppfd(requested_ppfd, red_pwm, blue_pwm):
         return requested_ppfd
 
     try:
-        actual_ppfd = float(model["intercept"]) + float(model["slope"]) * float(red_pwm)
+        actual_ppfd = float(model["a_r"]) * float(red_pwm) + float(model["b_b"]) * float(blue_pwm)
     except Exception:
         logger.exception(
             "Failed to map applied PWM back to PPFD; using requested target_ppfd instead."
@@ -343,7 +343,7 @@ def applied_ppfd_for_pwm(red_pwm, blue_pwm):
         return 0.0
 
     try:
-        return float(model["intercept"]) + float(model["slope"]) * float(red_pwm)
+        return float(model["a_r"]) * float(red_pwm) + float(model["b_b"]) * float(blue_pwm)
     except Exception:
         logger.exception("Failed to map applied PWM back to actual PPFD.")
         return 0.0
