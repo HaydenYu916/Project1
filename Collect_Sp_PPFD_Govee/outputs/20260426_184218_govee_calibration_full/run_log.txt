@@ -1,0 +1,2 @@
+[2026-04-26T18:42:18.861] run_dir=/home/pi/Desktop/Project1/Collect_Sp_PPFD_Govee/outputs/20260426_184218_govee_ha_v2
+[2026-04-26T18:42:18.861] segment_count=28

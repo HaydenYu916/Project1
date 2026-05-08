@@ -4,8 +4,26 @@ Riotee Data Collector - Simplified Version
 Collects sensor data and outputs CSV
 """
 
-import time, logging, csv, os, sys, argparse, struct, json
+import time, logging, csv, os, sys, argparse, struct, json, fcntl, atexit
 from pathlib import Path
+
+# --- Single-instance lock ---------------------------------------------------
+# Prevent two collectors from running concurrently (would split BLE packets
+# between them and race on the shared CSV file). Uses an exclusive flock on
+# a sidecar file; OS releases it automatically on process exit.
+_LOCK_PATH = Path(__file__).resolve().parent / "riotee_collector.lock"
+_lock_fp = open(_LOCK_PATH, "w")
+try:
+    fcntl.flock(_lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.stderr.write(
+        f"riotee_data_collector: another instance already holds {_LOCK_PATH}; "
+        f"refusing to start a second copy.\n"
+    )
+    sys.exit(2)
+_lock_fp.write(str(os.getpid()))
+_lock_fp.flush()
+atexit.register(lambda: (_lock_fp.close(), _LOCK_PATH.unlink(missing_ok=True)))
 import numpy as np
 import pandas as pd
 import paho.mqtt.client as mqtt
@@ -354,7 +372,7 @@ def ensure_ha_discovery(device_id):
 # ============ Gateway ============
 def start_gateway():
     import subprocess, signal
-    gateway_cmd = Path(sys.executable).resolve().parent / "riotee-gateway"
+    gateway_cmd = Path(sys.executable).parent / "riotee-gateway"
     gateway_exec = str(gateway_cmd) if gateway_cmd.exists() else "riotee-gateway"
     if not args.no_kill:
         try:
@@ -368,10 +386,14 @@ def start_gateway():
         except: pass
     
     try:
-        proc = subprocess.Popen([gateway_exec, "server", "-p", str(CONFIG["gateway_port"]), 
-                                "-h", CONFIG["gateway_host"]], 
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        logging.info(f"Gateway started, PID: {proc.pid}")
+        gw_log_path = Path(__file__).resolve().parent / "logs" / "riotee_gateway.log"
+        gw_log_path.parent.mkdir(parents=True, exist_ok=True)
+        gw_log = open(gw_log_path, "ab", buffering=0)
+        # Use /dev/ttyACM0 as default device
+        proc = subprocess.Popen([gateway_exec, "server", "-d", "/dev/ttyACM0", "-p", str(CONFIG["gateway_port"]),
+                                "-h", CONFIG["gateway_host"]],
+                               stdout=gw_log, stderr=gw_log)
+        logging.info(f"Gateway started, PID: {proc.pid}, log: {gw_log_path}")
         time.sleep(3)
         return proc
     except Exception as e:

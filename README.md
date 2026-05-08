@@ -15,7 +15,7 @@
 
 ```
 Growpro/
-├── LED_MPPI_Controller/          # MPPI控制核心模块
+├── MPPI-Chamber/          # MPPI控制核心模块
 │   ├── src/                     # 源代码
 │   │   ├── mppi.py             # MPPI控制器核心
 │   │   └── led.py              # LED热力学模型
@@ -46,7 +46,7 @@ Growpro/
 ### 2. MPPI控制模块测试
 
 ```bash
-cd LED_MPPI_Controller
+cd MPPI-Chamber
 python tests/test_all_models.py
 ```
 
@@ -75,7 +75,7 @@ python riotee_system_manager.py start
 ## 🎯 系统架构
 
 ```
-Sensor模块 → LED_MPPI_Controller → Shelly模块 → LED设备
+Sensor模块 → MPPI-Chamber → Shelly模块 → LED设备
     ↓              ↓                    ↓
 Riotee传感器    MPPI优化算法        Shelly设备
 温度/光谱数据   光合作用预测        PWM控制
@@ -112,7 +112,7 @@ DEVICES = {
 
 ### MPPI参数调整
 
-在 `LED_MPPI_Controller/applications/control/mppi_control_real.py` 中调整控制参数：
+在 `MPPI-Chamber/applications/control/mppi_control_real.py` 中调整控制参数：
 
 ```python
 # 调整目标温度
@@ -159,7 +159,7 @@ time,ppfd,r_pwm,b_pwm,phase,phase_name
 ### 常见问题
 
 1. **温度读取失败**: 检查工作区根目录 `Tool/Sensor_riotee_server/logs/` 中的数据文件
-2. **MPPI控制失败**: 检查 `LED_MPPI_Controller/models/` 中的模型文件
+2. **MPPI控制失败**: 检查 `MPPI-Chamber/models/` 中的模型文件
 3. **设备连接失败**: 检查工作区根目录 `Tool/LED_Shelly/config/device_config.py` 中的IP地址
 4. **PWM调度器不工作**: 检查工作区根目录 `Tool/LED_Shelly/tests/` 中的时间表文件
 
@@ -167,7 +167,7 @@ time,ppfd,r_pwm,b_pwm,phase,phase_name
 
 ```bash
 # MPPI模块调试
-cd LED_MPPI_Controller
+cd MPPI-Chamber
 python tests/test_all_models.py
 
 # Shelly模块调试
@@ -182,7 +182,7 @@ python riotee_system_manager.py status
 ## 📝 更新日志
 
 ### v2.0.0 (2025-09-19)
-- **项目重组**: 控制核心保留在 `LED_MPPI_Controller`，设备与传感器工具统一到工作区根目录 `Tool/`
+- **项目重组**: 控制核心保留在 `MPPI-Chamber`，设备与传感器工具统一到工作区根目录 `Tool/`
 - **PWM调度器**: 新增基于时间表的自动PWM控制功能
 - **数据收集**: 自动收集传感器数据并按PPFD时间段分组保存
 - **实时更新**: 支持实时数据更新和后台运行模式
@@ -205,6 +205,6 @@ python riotee_system_manager.py status
 ## 🔗 相关链接
 
 - [GitHub仓库](https://github.com/HaydenYu916/Project1)
-- [LED MPPI控制器详细说明](LED_MPPI_Controller/README.md)
+- [LED MPPI控制器详细说明](MPPI-Chamber/README.md)
 - [Shelly设备控制说明](Tool/LED_Shelly/README.md)
 - [PWM调度器使用说明](Tool/LED_Shelly/tests/README_PWM_Scheduler.md)

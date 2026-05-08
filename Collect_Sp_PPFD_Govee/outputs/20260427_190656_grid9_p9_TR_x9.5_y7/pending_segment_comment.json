@@ -1,0 +1,10 @@
+{
+  "comment_id": "15-2026-04-27T20:06:31.692",
+  "segment_id": 15,
+  "pwm_r": 54,
+  "pwm_b": 36,
+  "rb_ratio_pwm": "1.500000",
+  "PPFD_spec_mean": null,
+  "ppfd_red_mean": null,
+  "ppfd_blue_mean": null
+}

@@ -1,0 +1,2 @@
+[2026-04-27T13:09:31.687] run_dir=/home/pi/Desktop/Project1/Collect_Sp_PPFD_Govee/outputs/20260427_130931_govee_leftback_45
+[2026-04-27T13:09:31.687] segment_count=45

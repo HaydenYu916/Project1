@@ -107,7 +107,7 @@
 ## 运行演示
 
 ```bash
-cd A/Growpro/LED_MPPI_Controller
+cd A/Growpro/MPPI-Growpod
 python examples/mppi_path_demo_fixed.py
 ```
 

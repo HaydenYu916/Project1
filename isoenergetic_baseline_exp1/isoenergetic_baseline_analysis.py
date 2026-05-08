@@ -17,8 +17,8 @@ import pandas as pd
 
 ARCHIVE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = ARCHIVE_DIR.parent
-SRC_DIR = PROJECT_ROOT / "LED_MPPI_Controller" / "src"
-SOLAR_VOL_CSV = PROJECT_ROOT / "LED_MPPI_Controller" / "data" / "Solar_Vol_clean.csv"
+SRC_DIR = PROJECT_ROOT / "MPPI-Chamber" / "src"
+SOLAR_VOL_CSV = PROJECT_ROOT / "MPPI-Chamber" / "data" / "Solar_Vol_clean.csv"
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
@@ -330,8 +330,8 @@ def assign_dt(df: pd.DataFrame, dt_mode: str, nominal_dt: float) -> pd.DataFrame
 
 
 def init_plant() -> LEDPlant:
-    calib_csv = PROJECT_ROOT / "LED_MPPI_Controller" / "data" / "calib_data.csv"
-    model_dir = PROJECT_ROOT / "LED_MPPI_Controller" / "Thermal" / "exported_models"
+    calib_csv = PROJECT_ROOT / "MPPI-Chamber" / "data" / "calib_data.csv"
+    model_dir = PROJECT_ROOT / "MPPI-Chamber" / "Thermal" / "exported_models"
     power_model = PWMtoPowerModel(include_intercept=True).fit(str(calib_csv))
     with contextlib.redirect_stdout(io.StringIO()):
         return LEDPlant(

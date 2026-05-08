@@ -1,0 +1,19 @@
+{
+  "transport": "ha",
+  "power": true,
+  "pwm": {
+    "Red": 67,
+    "Blue": 46
+  },
+  "mix_rgb": [
+    171,
+    0,
+    117
+  ],
+  "applied_at": "2026-05-01T00:30:58.435",
+  "latency_ms": 1647.0,
+  "updated_at": "2026-05-01T00:30:58",
+  "connected": false,
+  "global_brightness": 100,
+  "mode": "full_white"
+}

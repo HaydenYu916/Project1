@@ -86,7 +86,7 @@ PWM_TOLERANCE = 3  # PWM占空比验证容差（0-100范围内，允许±3的偏
 
 ### 前台运行（单次）
 ```bash
-cd /home/pi/Desktop/LED_MPPI_Controller/applications/control
+cd /home/pi/Desktop/MPPI-Chamber/applications/control
 python3 mppi_control_real_v2.py once
 ```
 
