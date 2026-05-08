@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Govee MPPI Dashboard</title>
+<title>LightFarm Demo Dashboard</title>
 <style>
 :root {
   --bg: #0f172a; --panel: #1e293b; --muted: #94a3b8; --fg: #f1f5f9;
@@ -18,7 +18,13 @@ h1 { margin: 0 0 6px 0; font-size: 22px; }
 .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
 .panel { background: var(--panel); border-radius: 12px; padding: 20px; margin-bottom: 16px;
   box-shadow: 0 4px 18px rgba(0,0,0,0.3); }
-.panel h2 { margin: 0 0 12px 0; font-size: 16px; color: var(--accent); }
+.panel h2 { margin: 0 0 12px 0; font-size: 16px; color: var(--accent);
+  cursor: pointer; user-select: none; display: flex; align-items: center; gap: 8px; }
+.panel h2::before { content: "▾"; font-size: 12px; color: var(--muted);
+  transition: transform 0.15s; display: inline-block; }
+.panel.collapsed h2 { margin-bottom: 0; }
+.panel.collapsed h2::before { transform: rotate(-90deg); }
+.panel.collapsed > :not(h2) { display: none !important; }
 .row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .slider-block { flex: 1; min-width: 280px; }
 .slider-block label { display: flex; justify-content: space-between; font-size: 13px;
@@ -59,8 +65,7 @@ button:disabled { background: #475569; color: #94a3b8; cursor: not-allowed; }
 </head>
 <body>
 <div class="wrap">
-  <h1>🌿 Govee MPPI Dashboard</h1>
-  <div class="sub">Pi via tailscale — pos=(0,0,6) cm, transport=HA, model=center-3z GPR</div>
+  <h1>🌿 LightFarm Demo Dashboard</h1>
 
   <div id="warn" class="warning-banner"></div>
 
@@ -82,7 +87,6 @@ button:disabled { background: #475569; color: #94a3b8; cursor: not-allowed; }
       </div>
     </div>
     <div style="margin-top:14px;" class="flex-grid">
-      <div class="metric"><span class="label">predicted PPFD</span><span><span class="value" id="m-pred">—</span><span class="unit">µmol/m²/s</span></span></div>
       <div class="metric"><span class="label">last dispatch</span><span class="value timestamp" id="m-disp">—</span></div>
       <div class="metric"><span class="label">dispatch latency</span><span><span class="value" id="m-lat">—</span><span class="unit">ms</span></span></div>
       <div class="metric"><span class="label">vcap</span><span><span class="value" id="m-vcap">—</span><span class="unit">V</span></span></div>
@@ -107,13 +111,186 @@ button:disabled { background: #475569; color: #94a3b8; cursor: not-allowed; }
     </div>
   </div>
 
-  <!-- MPPI placeholder -->
+  <!-- MPPI controller (UI hidden — backend endpoints retained) -->
+  <div class="panel" style="display:none;" data-disabled-mppi="1">
+    <h2>MPPI Controller</h2>
+    <div class="row" id="mppi-config">
+      <div class="metric"><span class="label">dt (s)</span>
+        <input type="number" id="mppi-dt" value="12" min="2" max="120" step="1"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">horizon</span>
+        <input type="number" id="mppi-horizon" value="5" min="1" max="30" step="1"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">samples</span>
+        <input type="number" id="mppi-samples" value="120" min="20" max="2000" step="10"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">R:B (red frac)</span>
+        <input type="number" id="mppi-rb" value="0.8" min="0" max="1" step="0.05"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">steps (0=∞)</span>
+        <input type="number" id="mppi-steps" value="0" min="0" max="500" step="1"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">demo gain</span>
+        <input type="number" id="mppi-gain" value="1" min="1" max="50" step="0.5"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">measure each step</span>
+        <select id="mppi-measure" style="background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:14px;">
+          <option value="1" selected>yes</option>
+          <option value="0">no</option>
+        </select></div>
+    </div>
+    <div class="row" style="margin-top:12px;">
+      <button id="mppi-start">Start MPPI</button>
+      <button id="mppi-stop" disabled style="background:#f87171;color:#7f1d1d;">Stop</button>
+      <button id="mppi-clear" style="background:#475569;color:#e2e8f0;">Clear</button>
+      <span id="mppi-status" style="color:var(--muted);font-size:13px;">idle</span>
+    </div>
+    <div style="margin-top:14px;" class="flex-grid">
+      <div class="metric"><span class="label">step</span><span class="value" id="mp-step">—</span></div>
+      <div class="metric"><span class="label">mppi_u</span><span><span class="value" id="mp-u">—</span><span class="unit">µmol/m²/s</span></span></div>
+      <div class="metric"><span class="label">pred PPFD</span><span><span class="value" id="mp-pred">—</span><span class="unit">µmol/m²/s</span></span></div>
+      <div class="metric"><span class="label">measured</span><span><span class="value" id="mp-meas">—</span><span class="unit">µmol/m²/s</span></span></div>
+      <div class="metric" id="mp-err-card"><span class="label">err %</span><span class="value" id="mp-err">—</span></div>
+      <div class="metric"><span class="label">min cost</span><span class="value" id="mp-cost">—</span></div>
+      <div class="metric"><span class="label">power</span><span><span class="value" id="mp-pow">—</span><span class="unit">W</span></span></div>
+    </div>
+    <div style="margin-top:14px;">
+      <canvas id="mppi-chart" width="1200" height="280"
+        style="width:100%;height:280px;display:block;background:#0f172a;border:1px solid #334155;border-radius:8px;"></canvas>
+    </div>
+    <div style="margin-top:12px;max-height:240px;overflow:auto;background:#0f172a;border-radius:8px;">
+      <table id="mppi-log" style="width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums;">
+        <thead style="position:sticky;top:0;background:#1e293b;">
+          <tr style="color:var(--muted);text-align:right;">
+            <th style="padding:6px 8px;text-align:left;">time</th>
+            <th style="padding:6px 8px;">step</th>
+            <th style="padding:6px 8px;">u</th>
+            <th style="padding:6px 8px;">R</th>
+            <th style="padding:6px 8px;">B</th>
+            <th style="padding:6px 8px;">pred</th>
+            <th style="padding:6px 8px;">meas</th>
+            <th style="padding:6px 8px;">err%</th>
+          </tr>
+        </thead>
+        <tbody id="mppi-log-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- GL-Gym closed-loop -->
   <div class="panel">
-    <h2>MPPI Controller (placeholder)</h2>
-    <div class="placeholder">
-      MPPI 实时 cost / rollout 可视化将在此处。
-      <br>
-      下一步：把 <code>LEDMPPIController.solve()</code> 接进 WebSocket 推送。
+    <h2>GL-Gym Closed Loop</h2>
+    <div class="row" id="glgym-config">
+      <div class="metric"><span class="label">tick (s)</span>
+        <input type="number" id="gl-tick" value="15" min="0.5" max="120" step="0.5"
+          style="width:70px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">max ticks</span>
+        <input type="number" id="gl-max" value="240" min="5" max="2000" step="5"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">max PPFD</span>
+        <input type="number" id="gl-maxppfd" value="60" min="10" max="200" step="5"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">R frac</span>
+        <input type="number" id="gl-rfrac" value="0.5" min="0" max="1" step="0.05"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">start day</span>
+        <input type="number" id="gl-startday" value="90" min="1" max="365" step="1"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">start hour</span>
+        <input type="number" id="gl-starthour" value="8" min="0" max="23" step="0.5"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">steps/tick</span>
+        <input type="number" id="gl-stepspertick" value="1" min="1" max="100" step="1"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">sim only</span>
+        <select id="gl-simonly" style="background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:14px;">
+          <option value="0" selected>no (drive Govee)</option>
+          <option value="1">yes (no hardware)</option>
+        </select></div>
+      <div class="metric"><span class="label">measure each tick</span>
+        <select id="gl-measure" style="background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:14px;">
+          <option value="1" selected>yes</option>
+          <option value="0">no</option>
+        </select></div>
+    </div>
+    <div style="margin-top:8px;color:var(--muted);font-size:12px;">
+      Preset for "10 s ≈ 1 sim day": tick=1, steps/tick=10, sim only=yes.
+    </div>
+    <div class="row" style="margin-top:12px;">
+      <button id="gl-start">Start</button>
+      <button id="gl-stop" disabled style="background:#f87171;color:#7f1d1d;">Stop</button>
+      <button id="gl-clear" style="background:#475569;color:#e2e8f0;">Clear chart</button>
+      <span id="gl-status" style="color:var(--muted);font-size:13px;">idle</span>
+    </div>
+    <div style="margin-top:14px;" class="flex-grid">
+      <div class="metric"><span class="label">tick</span><span class="value" id="gl-tickval">—</span></div>
+      <div class="metric"><span class="label">sim time</span><span class="value" id="gl-simtime">—</span></div>
+      <div class="metric"><span class="label">uLamp</span><span class="value" id="gl-ulamp">—</span></div>
+      <div class="metric"><span class="label">target PPFD</span><span><span class="value" id="gl-target">—</span><span class="unit">µmol/m²/s</span></span></div>
+      <div class="metric"><span class="label">PWM (R/B)</span><span class="value" id="gl-pwm">—</span></div>
+      <div class="metric"><span class="label">predicted</span><span><span class="value" id="gl-pred">—</span><span class="unit">µmol/m²/s</span></span></div>
+      <div class="metric"><span class="label">measured</span><span><span class="value" id="gl-meas">—</span><span class="unit">µmol/m²/s</span></span></div>
+    </div>
+    <div style="margin-top:14px;">
+      <canvas id="gl-chart" width="1200" height="240"
+        style="width:100%;height:240px;display:block;background:#0f172a;border:1px solid #334155;border-radius:8px;"></canvas>
+    </div>
+  </div>
+
+  <!-- GL-Gym Comparison -->
+  <div class="panel">
+    <h2>GL-Gym Comparison (sim only)</h2>
+    <div class="row" id="cmp-config">
+      <div class="metric"><span class="label">days</span>
+        <input type="number" id="cmp-days" value="1" min="0.25" max="14" step="0.25"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">tick (s)</span>
+        <input type="number" id="cmp-tick" value="0.5" min="0.1" max="10" step="0.1"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+      <div class="metric"><span class="label">steps/tick</span>
+        <input type="number" id="cmp-steps" value="2" min="1" max="48" step="1"
+          style="width:80px;background:#0f172a;border:1px solid #334155;color:var(--fg);border-radius:4px;padding:4px 6px;font-size:18px;"></div>
+    </div>
+    <div class="row" style="margin-top:12px;">
+      <button id="cmp-start">Start compare</button>
+      <button id="cmp-stop" disabled style="background:#f87171;color:#7f1d1d;">Stop</button>
+      <button id="cmp-clear" style="background:#475569;color:#e2e8f0;">Clear</button>
+      <span id="cmp-status" style="color:var(--muted);font-size:13px;">idle</span>
+    </div>
+    <div style="margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div>
+        <div style="color:var(--muted);font-size:12px;margin-bottom:4px;">Pn (mg CO₂·m⁻²·s⁻¹)</div>
+        <canvas id="cmp-pn-chart" width="800" height="240"
+          style="width:100%;height:240px;display:block;background:#0f172a;border:1px solid #334155;border-radius:8px;"></canvas>
+      </div>
+      <div>
+        <div style="color:var(--muted);font-size:12px;margin-bottom:4px;">Lamp Power (W·m⁻²)</div>
+        <canvas id="cmp-pw-chart" width="800" height="240"
+          style="width:100%;height:240px;display:block;background:#0f172a;border:1px solid #334155;border-radius:8px;"></canvas>
+      </div>
+    </div>
+    <div style="margin-top:12px;">
+      <div style="color:var(--muted);font-size:12px;margin-bottom:4px;">Air Temperature (°C)</div>
+      <canvas id="cmp-t-chart" width="1600" height="200"
+        style="width:100%;height:200px;display:block;background:#0f172a;border:1px solid #334155;border-radius:8px;"></canvas>
+    </div>
+    <div id="cmp-summary" style="margin-top:12px;color:var(--muted);font-size:13px;"></div>
+    <div style="margin-top:12px;" class="flex-grid" id="cmp-delta-cards"></div>
+  </div>
+
+  <!-- Sensor (Riotee) -->
+  <div class="panel">
+    <h2>Riotee Sensor</h2>
+    <div class="flex-grid">
+      <div class="metric"><span class="label">temperature</span><span><span class="value" id="s-temp">—</span><span class="unit">°C</span></span></div>
+      <div class="metric"><span class="label">humidity</span><span><span class="value" id="s-hum">—</span><span class="unit">%</span></span></div>
+      <div class="metric"><span class="label">vcap</span><span><span class="value" id="s-vcap">—</span><span class="unit">V</span></span></div>
+      <div class="metric"><span class="label">last update</span><span class="value timestamp" id="s-ts">—</span></div>
+    </div>
+    <div style="margin-top:14px;">
+      <div style="color:var(--muted);font-size:12px;margin-bottom:4px;">Temperature / Humidity (last N)</div>
+      <canvas id="sensor-temp-chart" width="1200" height="200"
+        style="width:100%;background:#0f172a;border-radius:8px;"></canvas>
     </div>
   </div>
 </div>

@@ -28,7 +28,34 @@ if REPO_ROOT not in sys.path:
 from gl_gym.environments.greenlight_env import GreenLightEnv
 from gl_gym.components.rule_based import RuleBasedController
 from gl_gym.core.types import StepContext
-from RL.utils import load_env_params, load_model_hyperparams, build_env_kwargs
+from gl_gym.components.weather import WeatherRepository
+from gl_gym.environments.utils import load_weather_data
+
+import yaml as _yaml
+from os.path import join as _join
+
+
+def load_env_params(env_id: str, path: str) -> Dict:
+    with open(_join(path, env_id + ".yml"), "r") as f:
+        params = _yaml.load(f, Loader=_yaml.FullLoader)
+    return params[env_id]
+
+
+def load_model_hyperparams(algorithm: str, env_id: str) -> Dict:
+    with open(_join("configs/agents/", algorithm + ".yml"), "r") as f:
+        params = _yaml.load(f, Loader=_yaml.FullLoader)
+    return params[env_id]
+
+
+def build_env_kwargs(env_kwargs):
+    env_kwargs = env_kwargs.copy()
+    weather_repository_kwargs = env_kwargs.pop("weather_repository_kwargs")
+    env_kwargs["weather_repository"] = WeatherRepository(
+        weather_data_dir=weather_repository_kwargs["weather_data_dir"],
+        load_weather_data_fn=eval(weather_repository_kwargs["load_weather_data_fn"]),
+    )
+    eval_weather_scenarios = env_kwargs.pop("eval_scenarios")
+    return env_kwargs, eval_weather_scenarios
 
 from demo.sensor_snapshot import read_sensor_snapshot
 from demo.seed_env import seed_env_from_snapshot

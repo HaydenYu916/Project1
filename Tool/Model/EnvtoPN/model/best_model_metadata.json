@@ -1,6 +1,6 @@
 {
-  "model_name": "HistGBR",
-  "model_version": "tuned",
+  "model_name": "MLP_smooth",
+  "model_version": "v2_synth_tail",
   "feature_columns": [
     "T",
     "CO2",
@@ -8,36 +8,40 @@
     "PPFD"
   ],
   "target_col": "Pn_avg",
-  "input_csv": "/Users/z5540822/Downloads/PWM-ppfd/Hao_PN_training/Data/PPFD_clean.csv",
-  "n_rows": 600,
+  "input_csv": "/home/pi/Desktop/Project1/MPPI-Govee/data/ALL_Data.csv",
+  "n_rows": 1470,
+  "n_real": 420,
+  "n_synth_tail": 1050,
+  "synth_tail": {
+    "T_grid": [
+      31.0,
+      32.0,
+      33.0,
+      34.0,
+      35.0,
+      36.0,
+      37.0,
+      38.0,
+      39.0,
+      40.0,
+      41.0,
+      42.0,
+      43.0,
+      44.0,
+      45.0
+    ],
+    "T0": 30.0,
+    "tau": 8.0,
+    "formula": "Pn(T)=Pn(30)*exp(-(T-T0)/tau)"
+  },
   "normalization": "StandardScaler in pipeline before model",
   "test_metrics": {
-    "RMSE": 0.5453618277560996,
-    "MAE": 0.36141772904870517,
-    "R2": 0.9933730993188432,
-    "Bias": -0.09004706239893316,
-    "NRMSE_mean": 0.04871042482463306,
-    "NRMSE_range": 0.021599332471090936
+    "RMSE": 0.6932842657394704,
+    "MAE": 0.5090306798690026,
+    "R2": 0.9870308979266603,
+    "Bias": -0.007264493206417407,
+    "CV_R2_mean": 0.9809238213855419,
+    "CV_R2_std": 0.0060172444585520025
   },
-  "used_tuning": true,
-  "available_models": [
-    "DummyMean",
-    "LinearRegression",
-    "Ridge",
-    "Lasso",
-    "ElasticNet",
-    "Huber",
-    "PLSR",
-    "PCR_Ridge",
-    "KNN",
-    "SVR_RBF",
-    "KernelRidge_RBF",
-    "DecisionTree",
-    "RandomForest",
-    "ExtraTrees",
-    "GradientBoosting",
-    "HistGBR",
-    "GPR",
-    "MLP"
-  ]
+  "trained_at": "2026-05-08T00:37:39"
 }

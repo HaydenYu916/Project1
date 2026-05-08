@@ -1,5 +1,5 @@
 {
-  "model_name": "GPR",
+  "model_name": "SVR_RBF",
   "model_version": "tuned",
   "feature_columns": [
     "pwm_r",
@@ -9,15 +9,15 @@
     "z_cm"
   ],
   "target_col": "PPFD_spec_mean",
-  "input_csv": "data/Train_data-center_3z_pwm_all.csv",
-  "n_rows": 108,
+  "input_csv": "MPPI-Govee/models/pwmtoppfd/training_data_v6.csv",
+  "n_rows": 346,
   "test_metrics": {
-    "RMSE": 0.2153410479896465,
-    "MAE": 0.15593118029500452,
-    "R2": 0.9991724018068321,
-    "Bias": -0.006553088843335138,
-    "NRMSE_mean": 0.013164129415794038,
-    "NRMSE_range": 0.008001269425112019
+    "RMSE": 0.9820496313892315,
+    "MAE": 0.8043206591377497,
+    "R2": 0.9960021540473913,
+    "Bias": -0.1753297721023757,
+    "NRMSE_mean": 0.0408714715179677,
+    "NRMSE_range": 0.017017025889407462
   },
   "used_tuning": true,
   "available_models": [
