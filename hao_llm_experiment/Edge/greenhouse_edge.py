@@ -540,6 +540,10 @@ def build_server_payload():
         env_state["current_blue_pwm"],
     )
     last_target_ppfd = float(env_state.get("target_ppfd", 0.0) or 0.0)
+    cur_r = float(env_state["current_red_pwm"] or 0)
+    cur_b = float(env_state["current_blue_pwm"] or 0)
+    total_pwm = cur_r + cur_b
+    last_blue_share = (cur_b / total_pwm) if total_pwm > 0 else 0.0
     return {
         "local_time": now.strftime("%H:%M"),
         "timezone": EDGE_CONFIG["timezone"],
@@ -558,6 +562,7 @@ def build_server_payload():
         "tleaf_delta_15min": _delta_from_window("Tleaf", LONG_WINDOW_SECONDS),
         "pn_delta_15min": _delta_from_window("Pn_pred", LONG_WINDOW_SECONDS),
         "last_target_ppfd": last_target_ppfd,
+        "last_blue_share": last_blue_share,
         "sensor_data_valid": current_data_valid(),
         "missing_fields": get_missing_fields(STATE_REQUIRED_FIELDS),
     }
@@ -1012,7 +1017,7 @@ def run_fallback_control():
 
     if safe_ppfd > 0:
         try:
-            res = pwm_model.build_result(safe_ppfd, pwm_pkg["recommended_rb_ratio"], pwm_pkg)
+            res = pwm_model.build_result(safe_ppfd, pwm_pkg.get("default_blue_share", 0.0), pwm_pkg)
             red_pwm = clamp_pwm_value(res["red_pwm"])
             blue_pwm = clamp_pwm_value(res["blue_pwm"])
         except Exception:
@@ -1053,6 +1058,13 @@ def on_message(client, userdata, msg):
             logger.warning("Ignoring command with invalid values: %s payload=%s", exc, payload)
             return
 
+        max_blue_share = float(pwm_pkg.get("max_blue_share", 0.5))
+        try:
+            blue_share = float(data.get("blue_share", pwm_pkg.get("default_blue_share", 0.0)))
+        except (TypeError, ValueError):
+            blue_share = float(pwm_pkg.get("default_blue_share", 0.0))
+        blue_share = max(0.0, min(blue_share, max_blue_share))
+
         # On restart, keep the last non-zero light level unless the broker
         # provides a fresh non-retained command or an explicit retained zero.
         if time.time() - startup_time < 15 and target_ppfd == 0 and getattr(msg, "retain", False):
@@ -1061,13 +1073,13 @@ def on_message(client, userdata, msg):
 
         if target_ppfd > 0:
             try:
-                res = pwm_model.build_result(target_ppfd, pwm_pkg["recommended_rb_ratio"], pwm_pkg)
+                res = pwm_model.build_result(target_ppfd, blue_share, pwm_pkg)
                 red_pwm = clamp_pwm_value(res["red_pwm"])
                 blue_pwm = clamp_pwm_value(res["blue_pwm"])
             except Exception:
                 logger.exception(
-                    "Failed to convert target_ppfd=%.2f into LED PWM values; command ignored.",
-                    target_ppfd,
+                    "Failed to convert target_ppfd=%.2f blue_share=%.3f into LED PWM values; command ignored.",
+                    target_ppfd, blue_share,
                 )
                 return
         else:

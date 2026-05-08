@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 
 """
-Predict red and blue PWM values from a target PPFD.
+Predict red and blue PWM values from a target PPFD with a chosen blue share.
 
-This script uses the linear model trained on samples near an R:B ratio of 5:1:
-    PPFD = intercept + slope * pwm_r
+Two-channel linear model (no intercept, forced through origin):
+    PPFD = a_r * pwm_r + b_b * pwm_b
 
-By default, it returns a PWM pair using R:B = 5:1.
-You can provide a different ratio if needed, but accuracy may decrease
-when the output ratio moves far away from 5:1.
+The caller picks `blue_share = pwm_b / (pwm_r + pwm_b)` in [0, max_blue_share].
+The default cap is 0.5, which enforces pwm_r >= pwm_b.
 
-Example:
-    python3 predict_pwm_from_ppfd.py --ppfd 200
+Examples:
+    python3 predict_pwm_from_ppfd.py --ppfd 200                # default blue_share=0.0 (pure red)
+    python3 predict_pwm_from_ppfd.py --ppfd 400 --blue-share 0.3
 """
 
 import argparse
@@ -20,16 +20,20 @@ from pathlib import Path
 
 
 DEFAULT_MODEL = {
-    "model_name": "pwm_to_ppfd_linear_5to1_nearby",
-    "intercept": 1.994258,
-    "slope": 3.695779,
-    "ratio_window": [4.7, 5.3],
-    "recommended_rb_ratio": 5.0,
-    "sample_count": 16,
-    "train_pwm_r_min": 21.0,
-    "train_pwm_r_max": 83.0,
-    "train_ppfd_min": 80.17,
-    "train_ppfd_max": 311.65,
+    "model_name": "pwm_to_ppfd_linear_2ch",
+    "a_r": 3.5731,
+    "b_b": 1.8293,
+    "max_blue_share": 0.5,
+    "default_blue_share": 0.0,
+    "sample_count": 20,
+    "train_pwm_min": 0,
+    "train_pwm_max": 100,
+    "train_ppfd_min": 71.3,
+    "train_ppfd_max": 526.3,
+    "rmse": 6.25,
+    "max_abs_err": 14.0,
+    "trained_at": "2026-05-08",
+    "trained_run": "Collect_Sp_PPFD_LED/outputs/20260508_131754_single_C_z25_RgeB_chamber2",
 }
 
 
@@ -47,30 +51,48 @@ def load_model(model_json: str | None):
     return model
 
 
-def predict_red_pwm(target_ppfd: float, intercept: float, slope: float) -> float:
-    if slope <= 0:
-        raise ValueError("Model slope must be greater than 0")
-    return max(0.0, (target_ppfd - intercept) / slope)
+def build_result(target_ppfd: float, blue_share: float, model: dict):
+    if target_ppfd < 0:
+        raise ValueError("Target PPFD must be >= 0")
 
+    a_r = float(model["a_r"])
+    b_b = float(model["b_b"])
+    max_share = float(model.get("max_blue_share", 0.5))
 
-def build_result(target_ppfd: float, rb_ratio: float, model: dict):
-    if target_ppfd <= 0:
-        raise ValueError("Target PPFD must be greater than 0")
-    if rb_ratio <= 0:
-        raise ValueError("R:B ratio must be greater than 0")
+    s = max(0.0, min(float(blue_share), max_share))
 
-    pwm_r = predict_red_pwm(target_ppfd, model["intercept"], model["slope"])
-    pwm_b = pwm_r / rb_ratio
-    predicted_ppfd = model["intercept"] + model["slope"] * pwm_r
+    # PPFD = a_r * R + b_b * B; with B = s*(R+B), R = (1-s)*(R+B):
+    #   PPFD = (R+B) * (a_r*(1-s) + b_b*s)
+    denom = a_r * (1.0 - s) + b_b * s
+    total = 0.0 if denom <= 0 else target_ppfd / denom
+    pwm_r = (1.0 - s) * total
+    pwm_b = s * total
+
+    # Saturate per-channel to [0, 100]; if red caps, push remaining demand to blue
+    # but never exceed pwm_r (R >= B invariant).
+    saturated = False
+    if pwm_r > 100.0:
+        saturated = True
+        pwm_r = 100.0
+        remaining = max(0.0, target_ppfd - a_r * pwm_r)
+        pwm_b = min(pwm_r, remaining / b_b if b_b > 0 else 0.0)
+    if pwm_b > 100.0:
+        saturated = True
+        pwm_b = 100.0
+    if pwm_b > pwm_r:
+        pwm_b = pwm_r  # enforce R >= B even after numerical drift
+
+    predicted_ppfd = a_r * pwm_r + b_b * pwm_b
 
     return {
         "target_ppfd": target_ppfd,
         "predicted_ppfd": predicted_ppfd,
-        "rb_ratio": rb_ratio,
+        "blue_share": s,
         "red_pwm_float": pwm_r,
         "blue_pwm_float": pwm_b,
-        "red_pwm": round(pwm_r),
-        "blue_pwm": round(pwm_b),
+        "red_pwm": int(round(pwm_r)),
+        "blue_pwm": int(round(pwm_b)),
+        "saturated": saturated,
         "in_training_ppfd_range": (
             model["train_ppfd_min"] <= target_ppfd <= model["train_ppfd_max"]
         ),
@@ -79,68 +101,43 @@ def build_result(target_ppfd: float, rb_ratio: float, model: dict):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Input a target PPFD and get recommended red and blue PWM values."
+        description="Input a target PPFD and blue share, get recommended red/blue PWM."
     )
+    parser.add_argument("--ppfd", type=float, required=True, help="Target PPFD")
     parser.add_argument(
-        "--ppfd",
+        "--blue-share",
         type=float,
-        required=True,
-        help="Target PPFD, for example 200",
+        default=DEFAULT_MODEL["default_blue_share"],
+        help="Blue share = B/(R+B), in [0, max_blue_share]. Default 0.0 (pure red).",
     )
-    parser.add_argument(
-        "--rb-ratio",
-        type=float,
-        default=DEFAULT_MODEL["recommended_rb_ratio"],
-        help="R:B ratio used for output, default is 5.0",
-    )
-    parser.add_argument(
-        "--model-json",
-        type=str,
-        default=None,
-        help="Optional path to a model JSON exported by the notebook",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the result in JSON format",
-    )
+    parser.add_argument("--model-json", type=str, default=None, help="Optional model JSON path")
+    parser.add_argument("--json", action="store_true", help="Print JSON")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     model = load_model(args.model_json)
-    result = build_result(args.ppfd, args.rb_ratio, model)
+    result = build_result(args.ppfd, args.blue_share, model)
 
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return
 
     print("Model:", model["model_name"])
-    print(
-        "Equation: PPFD = %.6f + %.6f * pwm_r"
-        % (model["intercept"], model["slope"])
-    )
-    print("Target PPFD: %.2f" % result["target_ppfd"])
-    print("R:B ratio: %.3f:1" % result["rb_ratio"])
-    print("Suggested red PWM: %.2f (rounded: %d)" % (
-        result["red_pwm_float"],
-        result["red_pwm"],
-    ))
-    print("Suggested blue PWM: %.2f (rounded: %d)" % (
-        result["blue_pwm_float"],
-        result["blue_pwm"],
-    ))
-    print("Predicted PPFD: %.2f" % result["predicted_ppfd"])
-
+    print(f"Equation: PPFD = {model['a_r']:.4f}*R + {model['b_b']:.4f}*B")
+    print(f"Target PPFD: {result['target_ppfd']:.2f}")
+    print(f"Blue share : {result['blue_share']:.3f}")
+    print(f"Red  PWM   : {result['red_pwm_float']:.2f} (rounded {result['red_pwm']})")
+    print(f"Blue PWM   : {result['blue_pwm_float']:.2f} (rounded {result['blue_pwm']})")
+    print(f"Predicted  : {result['predicted_ppfd']:.2f}")
+    if result["saturated"]:
+        print("Warning: hardware PWM saturated; actual PPFD may be below target.")
     if not result["in_training_ppfd_range"]:
         print(
-            "Warning: target PPFD is outside the training range %.2f ~ %.2f, so this is an extrapolation."
-            % (model["train_ppfd_min"], model["train_ppfd_max"])
+            f"Warning: target PPFD outside training range "
+            f"{model['train_ppfd_min']:.2f}~{model['train_ppfd_max']:.2f} (extrapolation)."
         )
-
-    if abs(result["rb_ratio"] - model["recommended_rb_ratio"]) > 0.5:
-        print("Warning: the requested output ratio is far from 5:1, so accuracy may decrease.")
 
 
 if __name__ == "__main__":

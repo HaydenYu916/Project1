@@ -212,7 +212,7 @@ def on_message(client, userdata, msg):
 
         state = json.loads(msg.payload.decode())
         logger.info(
-            "📩 Received Edge message #%s topic=%s: local_time=%s tz=%s ppfd_now=%.1f pn_now=%.2f tleaf_now=%.2f last_target_ppfd=%.1f red_pwm=%s blue_pwm=%s saturated=%s valid=%s",
+            "📩 Received Edge message #%s topic=%s: local_time=%s tz=%s ppfd_now=%.1f pn_now=%.2f tleaf_now=%.2f last_target_ppfd=%.1f last_blue_share=%.2f red_pwm=%s blue_pwm=%s saturated=%s valid=%s",
             edge_message_count,
             msg.topic,
             state.get("local_time", "--:--"),
@@ -221,6 +221,7 @@ def on_message(client, userdata, msg):
             state.get("pn_now", 0.0),
             state.get("tleaf_now", 0.0),
             state.get("last_target_ppfd", 0.0),
+            state.get("last_blue_share", 0.0),
             state.get("current_red_pwm", 0),
             state.get("current_blue_pwm", 0),
             state.get("pwm_saturation_label", "none"),
@@ -256,6 +257,7 @@ def on_message(client, userdata, msg):
             "tleaf_delta_15min": state.get("tleaf_delta_15min", 0.0),
             "pn_delta_15min": state.get("pn_delta_15min", 0.0),
             "last_target_ppfd": state.get("last_target_ppfd", 0.0),
+            "last_blue_share": state.get("last_blue_share", 0.0),
             "current_red_pwm": state.get("current_red_pwm", 0),
             "current_blue_pwm": state.get("current_blue_pwm", 0),
             "pwm_saturated": state.get("pwm_saturated", 0),
@@ -273,11 +275,17 @@ def on_message(client, userdata, msg):
         # Run LLM
         logger.info("🧠 Consulting AI Agronomist...")
         decision = controller.decide(obs, physics_ctx, forecast)
-        logger.info(f"💡 LLM Rationale: {decision['rationale']}")
+        logger.info(
+            "💡 LLM Decision: target_ppfd=%.1f blue_share=%.2f | %s",
+            float(decision.get("target_ppfd", 0.0)),
+            float(decision.get("blue_share", 0.0)),
+            decision.get("rationale", ""),
+        )
         
         # Send command back to Edge
         cmd_payload = json.dumps({
-            "target_ppfd": decision["target_ppfd"]
+            "target_ppfd": decision["target_ppfd"],
+            "blue_share": decision.get("blue_share", 0.0),
         })
         client.publish(TOPIC_CMD, cmd_payload, retain=True)
         logger.info(f"📤 Sent Setpoints: {cmd_payload}")

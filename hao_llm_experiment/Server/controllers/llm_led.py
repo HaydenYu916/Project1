@@ -20,7 +20,9 @@ class LLMLEDPolicy:
 @dataclass
 class LLMControlLimits:
     target_ppfd_min: float = 0.0
-    target_ppfd_max: float = 400.0  # Adjust based on your max hardware capability
+    target_ppfd_max: float = 520.0  # 2026-05-08 calibration: max achievable ≈526 at R=B=100
+    blue_share_min: float = 0.0     # 0.0 = pure red
+    blue_share_max: float = 0.5     # 0.5 = R == B (boundary of R >= B constraint)
 
 @dataclass
 class LLMLoggerConfig:
@@ -77,31 +79,32 @@ def _build_prompt(observations: Dict[str, Any], context: Dict[str, Any], forecas
         else "[temp_min, temp_max]"
     )
     blocks = [
-        "You are a greenhouse controls engineer. Choose a target PPFD to maximize photosynthesis (Pn) while minimizing energy $/kWh cost.",
-        'Return STRICT JSON only with keys { "target_ppfd", "rationale", "explanation" }. No extra text. No markdown.',
+        "You are a greenhouse controls engineer. Choose a target PPFD and the blue/red mix to maximize photosynthesis (Pn) while minimizing energy $/kWh cost.",
+        'Return STRICT JSON only with keys { "target_ppfd", "blue_share", "rationale", "explanation" }. No extra text. No markdown.',
         '\n[Observations]\n' + json.dumps(llm_observations),
         '\n[Physics_Context]\n' + json.dumps(context),
         '\n[Temperature_Forecast]\n' + json.dumps(forecast),
         '\n[Objectives_And_Penalties]\n' + json.dumps(policy),
         "\n[Actuator_Constraints]\n"
         "- LED actuator limits are hard bounds.\n"
-        "- Red PWM range: 0 to 100 percent.\n"
-        "- Blue PWM range: 0 to 100 percent.\n"
-        "- Values above 100 percent cannot be executed by the hardware.\n"
-        "- If the requested target_ppfd would require either LED channel to exceed 100 percent PWM, the edge node will saturate at the hardware limit.\n"
-        "- Once PWM is saturated, increasing target_ppfd further may not increase actual PPFD.\n"
-        "- Choose a realistic target_ppfd that respects actuator saturation and current plant conditions.\n",
+        "- Red PWM range: 0 to 100 percent. Blue PWM range: 0 to 100 percent.\n"
+        "- HARD CONSTRAINT: red_pwm >= blue_pwm at all times.\n"
+        "- target_ppfd allowed range: 0 to 520. Maximum achievable PPFD is ~526 (R=B=100).\n"
+        "- blue_share = blue_pwm / (red_pwm + blue_pwm) in [0.0, 0.5]. 0.0 = pure red; 0.5 = red == blue.\n"
+        "- Forward model (used by edge to convert your output to PWM): PPFD ≈ 3.573 * red_pwm + 1.829 * blue_pwm.\n"
+        "- If your target_ppfd cannot be reached at the chosen blue_share within the 100% caps, the edge will saturate and actual PPFD may be below target.\n",
         "\n[Reasoning_Instructions]\n"
-        "- Respect actuator limits.\n"
+        "- Respect actuator limits and the red >= blue constraint.\n"
         "- Treat 'is_day' as the only authoritative day/night signal.\n"
         "- Ignore clock-time semantics for day/night classification.\n"
-        "- If is_day == 0, set target_ppfd to 0.0 for dark respiration.\n"
+        "- If is_day == 0, set target_ppfd to 0.0 (blue_share is then irrelevant; output 0.0).\n"
         f"- Keep indoor temperature within {temp_range_text}.\n"
         "- If tleaf_now >= temp_max or next_1h_temp_estimate >= temp_max, do not increase PPFD.\n"
         "- If temperature is at or above temp_max, prefer reducing PPFD below the current level.\n"
         "- When temperature is near the upper limit, prioritize thermal relief over photosynthesis gains.\n"
         "- Consider electricity_price_$per_kWh to weigh energy cost.\n"
-        "- OUTPUT STRICT JSON ONLY with fields: target_ppfd, rationale, explanation.\n"
+        "- Choose blue_share based on plant stage and spectral preference: low values (0.0-0.15) favor red-heavy growth; higher values (0.2-0.4) add blue for compact morphology and stomatal regulation.\n"
+        "- OUTPUT STRICT JSON ONLY with fields: target_ppfd, blue_share, rationale, explanation.\n"
         "- 'explanation' must be a short step-by-step list (3-6 bullets, <=20 tokens each)."
     ]
     return "\n".join(blocks)
@@ -141,6 +144,8 @@ def _validate_and_parse(raw: str, limits: LLMControlLimits) -> Dict[str, Any]:
 
     ppfd = float(js.get('target_ppfd', 0.0))
     js['target_ppfd'] = float(np.clip(ppfd, limits.target_ppfd_min, limits.target_ppfd_max))
+    blue_share = float(js.get('blue_share', limits.blue_share_min))
+    js['blue_share'] = float(np.clip(blue_share, limits.blue_share_min, limits.blue_share_max))
     js.setdefault('rationale', '')
     js['explanation'] = _normalize_explanation(js.get('explanation', []))
     return js
@@ -234,6 +239,7 @@ class LLMLEDController:
         if int(obs.get("is_day", 1)) == 0:
             decision = {
                 "target_ppfd": 0.0,
+                "blue_share": 0.0,
                 "rationale": "is_day=0, so lights stay off for the dark period.",
                 "explanation": [
                     "Edge marked this interval as night.",
@@ -275,6 +281,7 @@ class LLMLEDController:
             # Safe Fallback
             fallback = {
                 "target_ppfd": 0.0,
+                "blue_share": 0.0,
                 "rationale": "fallback",
                 "explanation": [f"{type(e).__name__}: {e}"],
             }
