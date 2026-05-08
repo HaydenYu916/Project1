@@ -136,6 +136,35 @@ def parse_ratio_list(text: str) -> list[tuple[int, int]]:
     return ratios
 
 
+def parse_pair_list(text: str) -> list[tuple[int, int]]:
+    """Parse direct (R, B) PWM pairs, e.g. '60,80;80,60;100,100'.
+
+    Each pair is separated by ';' (or whitespace/newline). Within a pair,
+    R and B are separated by ','. Both values must be in [0, 100].
+    Returns [(R, B), ...] with the order preserved.
+    """
+    pairs: list[tuple[int, int]] = []
+    for sep in ("\n", "\t"):
+        text = text.replace(sep, ";")
+    for item in text.split(";"):
+        token = item.strip()
+        if not token:
+            continue
+        parts = token.split(",")
+        if len(parts) != 2:
+            raise ValueError(f"Invalid pair token: {token!r}. Expected 'R,B'")
+        r = int(parts[0].strip())
+        b = int(parts[1].strip())
+        if not (0 <= r <= 100) or not (0 <= b <= 100):
+            raise ValueError(f"Pair PWM must be in [0,100], got ({r},{b})")
+        if r == 0 and b == 0:
+            raise ValueError("Pair (0,0) is invalid; use a non-zero PWM")
+        pairs.append((r, b))
+    if not pairs:
+        raise ValueError("At least one (R,B) pair must be provided")
+    return pairs
+
+
 def parse_int_list(text: str) -> list[int]:
     values: list[int] = []
     for item in text.split(","):
@@ -570,42 +599,60 @@ def create_segment_conditions(
     drift_every: int,
     drift_pwm_r: int,
     drift_pwm_b: int,
+    pairs: list[tuple[int, int]] | None = None,
 ) -> list[SegmentCondition]:
+    """Build the segment list from either explicit (R,B) pairs OR a
+    ratios×totals cartesian grid.
+
+    When `pairs` is given (and non-empty) it is used verbatim and the
+    ratios/totals arguments are ignored — this is the only way to sample
+    the high-power region (R≥50 AND B≥50) since ratio×total is bounded
+    by total ≤ 100. Each pair becomes one normal segment; ratio_r/
+    ratio_b columns store the raw PWM values for downstream filtering.
+    """
     segment_id = 0
     normal_idx = 0
     out: list[SegmentCondition] = []
 
-    for ratio_r, ratio_b in ratios:
-        for total_pwm in totals:
-            normal_idx += 1
+    iterator: list[tuple[int, int, int, int, int]]
+    if pairs:
+        iterator = [(r, b, r + b, r, b) for (r, b) in pairs]
+    else:
+        iterator = []
+        for ratio_r, ratio_b in ratios:
+            for total_pwm in totals:
+                pwm_r, pwm_b = ratio_to_pwm(ratio_r, ratio_b, total_pwm)
+                iterator.append((pwm_r, pwm_b, total_pwm, ratio_r, ratio_b))
+
+    for pwm_r, pwm_b, total_pwm, ratio_r_col, ratio_b_col in iterator:
+        normal_idx += 1
+        segment_id += 1
+        out.append(
+            SegmentCondition(
+                segment_id=segment_id,
+                segment_type="normal",
+                ratio_r=ratio_r_col,
+                ratio_b=ratio_b_col,
+                total_pwm=total_pwm,
+                pwm_r=clamp_pwm(pwm_r),
+                pwm_b=clamp_pwm(pwm_b),
+                condition_index=normal_idx,
+            )
+        )
+        if drift_every > 0 and normal_idx % drift_every == 0:
             segment_id += 1
-            pwm_r, pwm_b = ratio_to_pwm(ratio_r, ratio_b, total_pwm)
             out.append(
                 SegmentCondition(
                     segment_id=segment_id,
-                    segment_type="normal",
-                    ratio_r=ratio_r,
-                    ratio_b=ratio_b,
-                    total_pwm=total_pwm,
-                    pwm_r=pwm_r,
-                    pwm_b=pwm_b,
+                    segment_type="drift_ref",
+                    ratio_r=drift_pwm_r,
+                    ratio_b=drift_pwm_b,
+                    total_pwm=drift_pwm_r + drift_pwm_b,
+                    pwm_r=clamp_pwm(drift_pwm_r),
+                    pwm_b=clamp_pwm(drift_pwm_b),
                     condition_index=normal_idx,
                 )
             )
-            if drift_every > 0 and normal_idx % drift_every == 0:
-                segment_id += 1
-                out.append(
-                    SegmentCondition(
-                        segment_id=segment_id,
-                        segment_type="drift_ref",
-                        ratio_r=drift_pwm_r,
-                        ratio_b=drift_pwm_b,
-                        total_pwm=drift_pwm_r + drift_pwm_b,
-                        pwm_r=clamp_pwm(drift_pwm_r),
-                        pwm_b=clamp_pwm(drift_pwm_b),
-                        condition_index=normal_idx,
-                    )
-                )
     return out
 
 
@@ -1137,6 +1184,16 @@ def parse_args() -> argparse.Namespace:
         default="20,40,60,80",
         help="Comma-separated total PWM list in [0,100], e.g. 20,40,60,80",
     )
+    parser.add_argument(
+        "--pairs",
+        default=None,
+        help=(
+            "Direct (R,B) PWM pairs separated by ';'. If set, --ratios and "
+            "--totals are ignored. This is the only way to sample R≥50 AND "
+            "B≥50 (ratios×totals is capped at total≤100). "
+            "Example: '60,60;80,80;100,100;60,80;80,60'"
+        ),
+    )
     parser.add_argument("--n-spec", type=int, default=3, help="Spectrometer triggers per segment (default: 3)")
     parser.add_argument(
         "--time-scale",
@@ -1280,6 +1337,9 @@ def main() -> int:
 
     ratios = parse_ratio_list(args.ratios)
     totals = parse_int_list(args.totals)
+    pairs = parse_pair_list(args.pairs) if args.pairs else None
+    if pairs:
+        log(f"Direct-pairs mode: {len(pairs)} (R,B) segments; --ratios/--totals ignored")
     timing = compute_timing(args.ts, args.n_spec, time_scale=effective_time_scale)
     args.spec_port = resolve_spectrometer_port(args.spec_port)
 
@@ -1298,6 +1358,7 @@ def main() -> int:
         drift_every=args.drift_every,
         drift_pwm_r=args.drift_pwm_r,
         drift_pwm_b=args.drift_pwm_b,
+        pairs=pairs,
     )
 
     config_payload = {
