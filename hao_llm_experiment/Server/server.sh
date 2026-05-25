@@ -52,6 +52,8 @@ start_server() {
   fi
 
   rm -f "$PID_FILE"
+  pkill -f "$SCRIPT_PATH" 2>/dev/null || true
+  sleep 1
   cd "$ROOT_DIR"
   touch "$LOG_FILE"
   setsid "$PYTHON_BIN" "$SCRIPT_PATH" >>"$LOG_FILE" 2>&1 < /dev/null &
