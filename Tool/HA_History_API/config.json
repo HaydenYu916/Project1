@@ -7,7 +7,7 @@
     ]
   },
   "query_defaults": {
-    "timezone": "Europe/Paris",
+    "timezone": "Australia/Sydney",
     "start_time": "2026-04-1 09:00:00",
     "end_time": "2026-04-12 23:00:00"
   }
